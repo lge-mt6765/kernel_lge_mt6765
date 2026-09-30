@@ -53,4 +53,5 @@ else
 	obj-$(CONFIG_MACH_MT3967) += common/
 	obj-$(CONFIG_MACH_MT6779) += common/
 	obj-$(CONFIG_MACH_MT6771) += common/
+	obj-$(CONFIG_LGE_LCM_SETTING) += lge/
 endif

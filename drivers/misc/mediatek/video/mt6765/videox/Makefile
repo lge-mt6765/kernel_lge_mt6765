@@ -111,8 +111,29 @@ ifneq ($(CONFIG_MTK_GPU_SUPPORT),)
 ccflags-y += -DHWGPU_SUPPORT
 endif
 
+ifeq ($(CONFIG_LGE_VSYNC_SKIP),y)
+obj-y += mtkfb_vsync_skip.o
+endif
+
+ifeq ($(CONFIG_LGE_INTERVAL_MONITOR),y)
+obj-y += lge_interval_monitor.o
+endif
+
+ifeq ($(CONFIG_LGE_FBCN),y)
+obj-y += lge_fbcn.o
+endif
+
 ifeq ($(MTK_MIRAVISION_SUPPORT), yes)
     ccflags-y += -DCONFIG_FOR_SOURCE_PQ
 endif
 
+ifeq ($(CONFIG_LGE_USE_DISPLAY_NOTIFIER),y)
+obj-y += lge_panel_notifier.o
+endif
+
+# use for mfts mode
+obj-$(CONFIG_LGE_DISPLAY_COMMON) += mfts_mode.o
+
 ccflags-$(CONFIG_MTK_LCM_DEVICE_TREE_SUPPORT) += -DMTK_LCM_DEVICE_TREE_SUPPORT
+
+subdir-ccflags-$(CONFIG_LGE_TOUCH_CORE) += -I$(srctree)/drivers/input/touchscreen/lge

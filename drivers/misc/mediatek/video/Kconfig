@@ -183,3 +183,118 @@ config MTK_MT6382_CMD_MODE
 	  BridgeIC 6382 can support VESA-1.2 DSC, compressing display framedata
 	  Normal project will disable it first
 	  If you are not sure about this, do not set it to y
+
+config LGE_DISPLAY_COMMON
+  bool "LGE_DISPLAY_COMMON"
+  default n
+  help
+    Common LGE display enhancements
+
+config LGE_MTK_DISPLAY_BUG_FIX
+  bool "LGE_MTK_DISPLAY_BUG_FIX"
+  default n
+  help
+    For managing Mediatek platform display driver issue
+
+config LGE_LCM_BACKLIGHT_PWM
+  bool "LGE_LCM_BACKLIGHT_PWM"
+  default n
+  help
+    To check backlight pwm or normal backlight
+
+config LGE_LCM_SETTING
+  bool "LGE_LCM_SETTING"
+  default n
+  help
+    control the lcm porch value and pll_clock ssc value
+    by sending the MIPI parameter to the DDIC.
+
+config BACKLIGHT_DRIVER_REG_TUNING
+  bool "LGE_BACKLIGHT_DRIVER_REG_TUNING"
+  default n
+  help
+    control the backlight/dsv registers.
+
+config LGE_DSI_PARAM_TUNING
+  bool "LGE_DSI_PARAM_TUNING"
+  default n
+  help
+    control the lcm porch value and pll_clock ssc value
+    by sending the MIPI parameter to the DDIC.
+
+config LGE_INIT_CMD_TUNING
+  bool "LGE_INIT_CMD_TUNING"
+  default n
+  help
+    control the init commands by sending the MIPI parameter to the DDIC.
+
+config LGE_BACKLIGHT_BRIGHTNESS_TUNING
+  bool "LGE_BACKLIGHT_BRIGHTNESS_TUNING"
+  default n
+  help
+    control the backlight brightness.
+
+config LGE_VSYNC_SKIP
+  bool "LGE_VSYNC_SKIP"
+  default n
+  help
+    CONFIG_LGE_VSYNC_SKIP
+
+config TUNING_MIPI_CLOCK
+  bool "TUNING_TUNING_MIPI_CLOCK"
+  default n
+  help
+    Control the pll clock by sending the MIPI parameter to the DDIC.
+
+config LGE_USE_TOUCH_NOTIFIER
+  bool "LGE_USE_TOUCH_NOTIFIER"
+  default n
+  help
+    This feature provides support to using the touch notifier.
+
+config LGE_USE_DISPLAY_NOTIFIER
+  bool "LGE_USE_DISPLAY_NOTIFIER"
+  default n
+  help
+    This feature provides support to using the display notifier.
+
+config LGE_DISPLAY_ESD_RECOVERY
+  bool "LGE_DISPLAY_ESD_RECOVERY"
+  default n
+  help
+    This feature provides support to using LG customized ESD recovery .
+
+config LGE_USE_MTK_ESD_RECOVERY
+  bool "LGE_USE_MTK_ESD_RECOVERY"
+  default n
+  help
+    This feature provides support to using mtk esd recovery solution .
+
+config LGE_INTERVAL_MONITOR
+  bool "Frame Interval Monitor"
+  help
+    This feature provides Frame Interval Monitor scheme.
+
+config LGE_FBCN
+  bool "Frame Based Clock Normalizer"
+  help
+    This feature provides Frame Based Clock Normalizer scheme.
+
+config LGE_USE_ESS_STRENGTH_TABLE
+  bool "LGE_USE_ESS_STRENGTH_TABLE"
+  default n
+  help
+    Use the ess strength table map to adjust the ess strength level.
+
+config LGE_NO_PANEL_POWER_IN_MFTS
+  bool "LGE_NO_PANEL_POWER_IN_MFTS"
+  default n
+  help
+    Use this feature for the case, which PANEL power is not used in MFTS.
+
+config LGE_MULTI_FRAME_RATE
+  bool "LGE_MULTI_FRAME_RATE"
+  default n
+  help
+    Use this feature for multi config framerate.
+
