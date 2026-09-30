@@ -1283,6 +1283,12 @@ struct LCM_DRIVER *lcm_driver_list[] = {
 #if defined(OTM1911A_FHDP_DSI_VDO_TRULY_RT4801)
 	&otm1911a_fhdp_dsi_vdo_truly_rt4801_lcm_drv,
 #endif
+#if defined(JD9365D_HDPLUS_DSI_VDO_HLT)
+	&jd9365d_hdplus_dsi_vdo_hlt_lcm_drv,
+#endif
+#if defined(JD9365DA_HDPLUS_DSI_VDO_SKI)
+	&jd9365da_hdplus_dsi_vdo_ski_drv,
+#endif
 };
 
 unsigned char lcm_name_list[][128] = {
@@ -1358,6 +1364,12 @@ unsigned char lcm_name_list[][128] = {
 
 #if defined(OPPO_TIANMA_TD4310_FHDP_DSI_VDO_RT5081)
 	"oppo_tianma_td4310_fhdp_dsi_vdo_rt5081_drv",
+#endif
+#if defined(JD9365D_HDPLUS_DSI_VDO_HLT)
+	"jd9365d_hdplus_dsi_vdo_hlt",
+#endif
+#if defined(JD9365DA_HDPLUS_DSI_VDO_SKI)
+	"jd9365da_hdplus_dsi_vdo_ski",
 #endif
 };
 
