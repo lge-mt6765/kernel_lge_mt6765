@@ -121,6 +121,7 @@ obj-y += mtk_ppm_policy_lcm_off.o
 obj-y += mtk_ppm_policy_hard_user_limit.o
 obj-y += mtk_ppm_policy_user_limit.o
 obj-y += mtk_ppm_policy_force_limit.o
+obj-$(CONFIG_LGE_PM_MTK_GAME_MODE) += lge_ppm_policy_game_mode.o
 # for test purpose
 obj-y += mtk_ppm_policy_ut.o
 

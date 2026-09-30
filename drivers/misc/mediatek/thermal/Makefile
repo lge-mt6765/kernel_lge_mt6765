@@ -87,3 +87,6 @@ else
 obj-y += $(subst ",,$(CONFIG_MTK_LEGACY_THERMAL_PLATFORM))/
 
 endif
+
+obj-$(CONFIG_LGE_PM) += lge/
+
