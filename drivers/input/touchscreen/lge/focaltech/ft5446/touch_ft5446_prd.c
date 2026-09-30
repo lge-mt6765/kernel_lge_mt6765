@@ -121,7 +121,7 @@ static void log_file_size_check(struct device *dev)
 
 	if (fname) {
 		file = filp_open(fname, O_RDONLY, 0666);
-		sys_chmod(fname, 0666);
+		ksys_chmod(fname, 0666);
 	} else {
 		TOUCH_E("%s : fname is NULL, can not open FILE\n",
 				__func__);
@@ -150,14 +150,14 @@ static void log_file_size_check(struct device *dev)
 			else
 				sprintf(buf1, "%s.%d", fname, i);
 
-			ret = sys_access(buf1, 0);
+			ret = ksys_access(buf1, 0);
 
 			if (ret == 0) {
 				TOUCH_I("%s : file [%s] exist\n",
 						__func__, buf1);
 
 				if (i == (MAX_LOG_FILE_COUNT - 1)) {
-					if (sys_unlink(buf1) < 0) {
+					if (ksys_unlink(buf1) < 0) {
 						TOUCH_E("%s : failed to remove file [%s]\n",
 								__func__, buf1);
 						goto error;
@@ -170,7 +170,7 @@ static void log_file_size_check(struct device *dev)
 							fname,
 							(i + 1));
 
-					if (sys_rename(buf1, buf2) < 0) {
+					if (ksys_rename(buf1, buf2) < 0) {
 						TOUCH_E("%s : failed to rename file [%s] -> [%s]\n",
 								__func__, buf1, buf2);
 						goto error;
@@ -195,7 +195,7 @@ static void write_file(struct device *dev, char *data, int write_time)
 	int fd = 0;
 	char *fname = NULL;
 	char time_string[64] = {0};
-	struct timespec my_time;
+	struct timespec64 my_time;
 	struct tm my_date;
 	mm_segment_t old_fs = get_fs();
 	int boot_mode = 0;
@@ -224,8 +224,8 @@ static void write_file(struct device *dev, char *data, int write_time)
 	}
 
 	if (fname) {
-		fd = sys_open(fname, O_WRONLY|O_CREAT|O_APPEND, 0666);
-		sys_chmod(fname, 0666);
+		fd = ksys_open(fname, O_WRONLY|O_CREAT|O_APPEND, 0666);
+		ksys_chmod(fname, 0666);
 	} else {
 		TOUCH_E("%s : fname is NULL, can not open FILE\n", __func__);
 		set_fs(old_fs);
@@ -234,8 +234,8 @@ static void write_file(struct device *dev, char *data, int write_time)
 
 	if (fd >= 0) {
 		if (write_time == TIME_INFO_WRITE) {
-			my_time = __current_kernel_time();
-			time_to_tm(my_time.tv_sec,
+			ktime_get_real_ts64(&my_time);
+			time64_to_tm(my_time.tv_sec,
 					sys_tz.tz_minuteswest * 60 * (-1),
 					&my_date);
 			snprintf(time_string, 64,
@@ -244,10 +244,10 @@ static void write_file(struct device *dev, char *data, int write_time)
 				my_date.tm_mday, my_date.tm_hour,
 				my_date.tm_min, my_date.tm_sec,
 				(unsigned long) my_time.tv_nsec / 1000000);
-			sys_write(fd, time_string, strlen(time_string));
+			ksys_write(fd, time_string, strlen(time_string));
 		}
-		sys_write(fd, data, strlen(data));
-		sys_close(fd);
+		ksys_write(fd, data, strlen(data));
+		ksys_close(fd);
 	} else {
 		TOUCH_E("File open failed\n");
 	}

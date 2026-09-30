@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 //#include <mt-plat/mtk_battery.h> fixme
 #include "ccci_auxadc.h"
+#include "../fsm/ccci_fsm_internal.h"
 
 #include "ccci_config.h"
 #include "ccci_common_config.h"

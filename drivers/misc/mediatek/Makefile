@@ -30,6 +30,7 @@ obj-$(CONFIG_MTK_PMIC_NEW_ARCH)	+= pmic/
 obj-$(CONFIG_MTK_PMIC_WRAP_HAL) += pmic_wrap/
 obj-y += devinfo/
 obj-y += subpmic/
+obj-$(CONFIG_LGE_SET_LCD_BIAS) += lcd_bias/
 obj-$(CONFIG_MTK_TINYSYS_MCUPM_SUPPORT) += mcupm/
 obj-$(CONFIG_MTK_MET) += met_drv/
 obj-$(CONFIG_MTK_BASE_POWER) += base/
@@ -99,6 +100,7 @@ ifneq (y, $(filter y, $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT6779)))
 obj-$(CONFIG_MTK_PPM) += ppm_v3/
 endif
 
+obj-$(CONFIG_MTK_BOOT) += boot/
 obj-$(CONFIG_MTK_CQDMA) += cqdma/
 
 obj-$(CONFIG_MTK_SRCLKEN_RC) += srclken_rc/

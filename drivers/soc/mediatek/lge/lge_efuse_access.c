@@ -25,24 +25,16 @@
 #include <linux/mutex.h>
 #include <linux/fs_struct.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/init_task.h>
 #include <linux/path.h>
 #include <crypto/hash.h>
-#include <linux/crypto.h>
-#include "mt-plat/mtk_partition.h"
 #include "mt-plat/mtk_devinfo.h"
 #include "soc/mediatek/lge/lge_efuse_access.h"
 
 int get_partition_path(char *partition_name, char *path_name, int path_size)
 {
-	struct hd_struct *part = NULL;
-
-	part = get_part(partition_name);
-	if (!part) {
-		pr_err("Not find partition %s\n", partition_name);
-		return RET_ERR;
-	}
-	snprintf(path_name, path_size, "/dev/block/mmcblk0p%d", part->partno);
-	put_part(part);
+	snprintf(path_name, path_size, "/dev/block/by-name/%s", partition_name);
 	return RET_OK;
 }
 

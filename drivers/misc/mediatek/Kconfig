@@ -269,6 +269,8 @@ config MTK_LCM_PHYSICAL_ROTATION_HW
 	  Select "y" if you want to enable LCM 180 rotate.
 	  Select "n" if unsure.
 
+source "drivers/misc/mediatek/lcd_bias/Kconfig"
+
 config CUSTOM_KERNEL_IMGSENSOR
 	string "Custom image sensor driver"
 	help
@@ -331,6 +333,7 @@ source "drivers/misc/mediatek/sensors-1.0/Kconfig"
 endmenu # Sensors
 
 menu "Modem & Connectivity"
+source "drivers/misc/mediatek/boot/Kconfig"
 source "drivers/misc/mediatek/ccci_util/Kconfig"
 source "drivers/misc/mediatek/ccmni/Kconfig"
 source "drivers/misc/mediatek/eccci/Kconfig"
