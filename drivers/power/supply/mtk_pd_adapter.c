@@ -52,11 +52,34 @@ struct mtk_pd_adapter_info {
 	const char *adapter_dev_name;
 	bool enable_kpoc_shdn;
 	int pd_type;
+#ifdef CONFIG_LGE_PM
+	int rp_curr;
+#endif
 };
 
 //void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 //	void *val);
 
+#ifdef CONFIG_LGE_PM
+static int notify_rp_current(struct mtk_pd_adapter_info *pinfo,
+			     struct tcp_notify *noti)
+{
+	struct adapter_device *adapter = pinfo->adapter_dev;
+	int rp_curr = 0;
+
+	if (!pinfo->tcpc)
+		return 0;
+
+	rp_curr = tcpm_inquire_typec_remote_rp_curr(pinfo->tcpc);
+	if (rp_curr == pinfo->rp_curr)
+		return 0;
+
+	pinfo->rp_curr = rp_curr;
+
+	return srcu_notifier_call_chain(&adapter->evt_nh,
+			MTK_TYPEC_RP_CURRENT, &pinfo->rp_curr);
+}
+#endif
 
 static int pd_tcp_notifier_call(struct notifier_block *pnb,
 				unsigned long event, void *data)
@@ -130,18 +153,26 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 		/* handle No-rp and dual-rp cable */
 		if (noti->typec_state.old_state == TYPEC_UNATTACHED &&
 		   (noti->typec_state.new_state == TYPEC_ATTACHED_CUSTOM_SRC ||
+#ifdef CONFIG_LGE_USB
+		   noti->typec_state.new_state == TYPEC_ATTACHED_DEBUG ||
+#endif
 		    noti->typec_state.new_state == TYPEC_ATTACHED_NORP_SRC)) {
 			pinfo->pd_type = MTK_PD_CONNECT_TYPEC_ONLY_SNK;
 			ret = srcu_notifier_call_chain(&adapter->evt_nh,
 				MTK_PD_CONNECT_TYPEC_ONLY_SNK, NULL);
-		} else if ((noti->typec_state.old_state ==
-			TYPEC_ATTACHED_CUSTOM_SRC ||
+		} else if ((noti->typec_state.old_state ==TYPEC_ATTACHED_CUSTOM_SRC ||
+#ifdef CONFIG_LGE_USB
+			noti->typec_state.old_state ==TYPEC_ATTACHED_DEBUG ||
+#endif
 			noti->typec_state.old_state == TYPEC_ATTACHED_NORP_SRC)
 			&& noti->typec_state.new_state == TYPEC_UNATTACHED) {
 			pinfo->pd_type = MTK_PD_CONNECT_NONE;
 			ret = srcu_notifier_call_chain(&adapter->evt_nh,
 				MTK_PD_CONNECT_NONE, NULL);
 		}
+#ifdef CONFIG_LGE_PM
+		ret = notify_rp_current(pinfo, noti);
+#endif
 		break;
 	case TCP_NOTIFY_WD_STATUS:
 		ret = srcu_notifier_call_chain(&adapter->evt_nh,
@@ -287,7 +318,7 @@ static int pd_get_cap(struct adapter_device *dev,
 
 	uint8_t cap_i = 0;
 	int ret;
-	unsigned int idx = 0;
+	int idx = 0;
 	unsigned int i, j;
 	struct mtk_pd_adapter_info *info;
 

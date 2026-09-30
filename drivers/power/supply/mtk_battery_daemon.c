@@ -20,7 +20,9 @@
 #include <pmic_lbat_service.h>
 #endif
 
-
+#ifdef CONFIG_LGE_PM_BATTERY_CYCLE
+#include <linux/power/battery_cycle.h>
+#endif
 
 static int interpolation(int i1, int b1, int i2, int b2, int i)
 {
@@ -335,7 +337,11 @@ void fg_custom_data_check(struct mtk_battery *gm)
 
 	p = &gm->fg_cust_data;
 	fg_table_cust_data = &gm->fg_table_cust_data;
+#ifdef CONFIG_LGE_PM_BATTERY_ID
+	/* do not need to get profile id here. */
+#else /* MediaTek */
 	fgauge_get_profile_id();
+#endif
 
 	bm_err("FGLOG MultiGauge0[%d] BATID[%d] pmic_min_vol[%d,%d,%d,%d,%d]\n",
 		p->multi_temp_gauge0, gm->battery_id,
@@ -1403,25 +1409,7 @@ void exec_BAT_EC(int cmd, int param)
 			gauge_set_property(GAUGE_PROP_CAR_TUNE_VALUE,
 				param);
 		}
-		break;
-	case 798:
-		{
-			bm_err(
-				"exe_BAT_EC cmd %d,FG_KERNEL_CMD_CHG_DECIMAL_RATE=%d\n",
-				cmd, param);
 
-		}
-		break;
-	case 799:
-		{
-			bm_err(
-				"exe_BAT_EC cmd %d, FG_DAEMON_CMD_GET_IS_FORCE_FULL, force_full =%d\n",
-				cmd, param);
-
-			gm->is_force_full = param;
-			wakeup_fg_algo(gm, FG_INTR_CHR_FULL);
-		}
-		break;
 
 	default:
 		bm_err(
@@ -2091,6 +2079,56 @@ static ssize_t BAT_EC_store(
 	return size;
 }
 
+#ifdef CONFIG_LGE_PM
+static ssize_t reset_fuelgauge_daemon_show(
+	struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct mtk_battery *gm;
+
+	bm_err("%s\n", __func__);
+	gm = get_mtk_battery();
+
+	bm_trace("[FG] %s:%d\n",
+		__func__,
+		gm->force_restart_daemon);
+	return sprintf(buf, "%d\n", gm->force_restart_daemon);
+}
+
+static ssize_t reset_fuelgauge_daemon_store(
+	struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t size)
+{
+	unsigned long val = 0;
+	int ret = 0;
+	struct mtk_battery *gm;
+
+	bm_err("%s\n", __func__);
+	gm = get_mtk_battery();
+
+	if (buf != NULL && size != 0) {
+		bm_err("[%s] buf is %s\n", __func__, buf);
+		ret = kstrtoul(buf, 10, &val);
+		if (ret != 0 || (long)val < 0) {
+			bm_err(
+				"[%s]val is %d ??\n", __func__,
+				(int)val);
+			val = 0;
+		}
+		if (val == 0)
+			gm->force_restart_daemon = false;
+		else if (val == 9) {
+			gm->force_restart_daemon++;
+			bm_err("[%s]pid=%d,send kill\n",
+				__func__,
+				gm->fgd_pid);
+			kill_pid(find_vpid(gm->fgd_pid), SIGKILL, 1);
+		}
+	}
+
+	return size;
+}
+#endif
+
 static DEVICE_ATTR_RW(Battery_Temperature);
 static DEVICE_ATTR_RW(UI_SOC);
 static DEVICE_ATTR_RW(uisoc_update_type);
@@ -2106,7 +2144,9 @@ static DEVICE_ATTR_RW(shutdown_condition_enable);
 static DEVICE_ATTR_RW(reset_battery_cycle);
 static DEVICE_ATTR_RW(reset_aging_factor);
 static DEVICE_ATTR_RW(BAT_EC);
-
+#ifdef CONFIG_LGE_PM
+static DEVICE_ATTR_RW(reset_fuelgauge_daemon);
+#endif
 
 static int mtk_battery_setup_files(struct platform_device *pdev)
 {
@@ -2173,6 +2213,12 @@ static int mtk_battery_setup_files(struct platform_device *pdev)
 	ret = device_create_file(&(pdev->dev), &dev_attr_reset_aging_factor);
 	if (ret)
 		goto _out;
+
+#ifdef CONFIG_LGE_PM
+	ret = device_create_file(&(pdev->dev), &dev_attr_reset_fuelgauge_daemon);
+	if (ret)
+		goto _out;
+#endif
 
 _out:
 	return ret;
@@ -2331,10 +2377,22 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 		/* todo */
 		int is_charger_exist = 0;
 
+#ifdef CONFIG_LGE_PM
+		switch (gm->bs_data.bat_status) {
+		case POWER_SUPPLY_STATUS_CHARGING:
+		case POWER_SUPPLY_STATUS_FULL:
+			is_charger_exist = 1;
+			break;
+		default:
+			is_charger_exist = 0;
+			break;
+		}
+#else /* MediaTek */
 		if (gm->bs_data.bat_status == POWER_SUPPLY_STATUS_CHARGING)
 			is_charger_exist = true;
 		else
 			is_charger_exist = false;
+#endif
 
 		ret_msg->fgd_data_len += sizeof(is_charger_exist);
 		memcpy(ret_msg->fgd_data,
@@ -2659,11 +2717,23 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 		/* charger status need charger API */
 		/* CHR_ERR = -1 */
 		/* CHR_NORMAL = 0 */
+#ifdef CONFIG_LGE_PM
+		switch (gm->bs_data.bat_status) {
+		case POWER_SUPPLY_STATUS_NOT_CHARGING:
+		case POWER_SUPPLY_STATUS_DISCHARGING:
+			charger_status = -1;
+			break;
+		default:
+			charger_status = 0;
+			break;
+		}
+#else /* MediaTek */
 		if (gm->bs_data.bat_status ==
 			POWER_SUPPLY_STATUS_NOT_CHARGING)
 			charger_status = -1;
 		else
 			charger_status = 0;
+#endif
 
 		ret_msg->fgd_data_len += sizeof(charger_status);
 		memcpy(ret_msg->fgd_data,
@@ -3068,6 +3138,10 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 		else
 			gm->ui_soc = (daemon_ui_soc + 50) / 100;
 
+#ifdef CONFIG_LGE_PM
+		gm->ui_soc_valid = true;
+#endif
+
 		/* when UISOC changes, check the diff time for smooth */
 		if (old_uisoc != gm->ui_soc) {
 			get_monotonic_boottime(&now_time);
@@ -3309,13 +3383,9 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 		} else {
 			memcpy(&gm->fgd_pid, &msg->fgd_data[0],
 				sizeof(gm->fgd_pid));
-			bm_err("[K]FG_DAEMON_CMD_SET_DAEMON_PID=%d,kill daemon:%d init_flag:%d (re-launch)\n",
-				gm->fgd_pid,
-				gm->Bat_EC_ctrl.debug_kill_daemontest,
-				gm->init_flag);
-			if (gm->Bat_EC_ctrl.debug_kill_daemontest != 1 &&
-				gm->init_flag == 1)
-				gm->fg_cust_data.dod_init_sel = 14;
+			bm_err("[K]FG_DAEMON_CMD_SET_DAEMON_PID = %d(re-launch)\n",
+				gm->fgd_pid);
+			/* kill daemon dod_init 14 , todo*/
 		}
 	}
 	break;
@@ -3484,6 +3554,12 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 	{
 		/* todo */
 		bm_debug("[K]FG_DAEMON_CMD_SET_QMAX_T_AGING\n");
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+		memcpy(&int_value, &msg->fgd_data[0], sizeof(int_value));
+		gm->bs_data.bat_charge_full = int_value;
+		bm_debug("[AGING] FG_DAEMON_CMD_SET_QMAX_T_AGING learned_cap: %d\n",
+		gm->bs_data.bat_charge_full);
+#endif
 	}
 	break;
 	case FG_DAEMON_CMD_SET_SAVED_CAR:
@@ -3500,6 +3576,11 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 		gm->aging_factor = int_value;
 		bm_debug("[K]FG_DAEMON_CMD_SET_AGING_FACTOR %d\n",
 		gm->aging_factor);
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+		gm->bs_data.bat_aging_factor = int_value;
+		bm_debug("[AGING] FG_DAEMON_CMD_SET_AGING_FACTOR aging_factor: %d\n",
+		gm->aging_factor);
+#endif
 	}
 	break;
 	case FG_DAEMON_CMD_SET_QMAX:
@@ -3566,7 +3647,23 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 	}
 	break;
 	case FG_DAEMON_CMD_SET_AGING_INFO:
-		bm_debug("[K]FG_DAEMON_CMD_SET_AGING_INFO\n");
+	{
+		int aging_factor = 0, q_max_aging = 0, aging_type = 0;
+
+		aging_type = msg->fgd_subcmd_para1;
+
+		if (aging_type == 0) { /* aging factor */
+			memcpy(&aging_factor, &msg->fgd_data[0],
+				sizeof(aging_factor));
+		} else if (aging_type == 1) { /*q_max with aging*/
+			memcpy(&q_max_aging, &msg->fgd_data[0],
+				sizeof(q_max_aging));
+		}
+
+		bm_debug(
+			"[K] FG_DAEMON_CMD_SET_AGING_INFO = %d %d %d\n",
+			aging_type, aging_factor, q_max_aging);
+	}
 	break;
 	case FG_DAEMON_CMD_GET_SOC_DECIMAL_RATE:
 	{
@@ -3593,19 +3690,6 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 	case FG_DAEMON_CMD_SET_ZCV_INTR_EN:
 		bm_debug("[K]FG_DAEMON_CMD_SET_ZCV_INTR_EN");
 	break;
-	case FG_DAEMON_CMD_GET_IS_FORCE_FULL:
-	{
-		/* 1 = trust customer full condition */
-		/* 0 = using gauge ori full flow */
-		int force_full = gm->is_force_full;
-
-		ret_msg->fgd_data_len += sizeof(force_full);
-		memcpy(ret_msg->fgd_data, &force_full,
-			sizeof(force_full));
-
-		bm_debug("[K]FG_DAEMON_CMD_GET_IS_FORCE_FULL %d", force_full);
-	};
-	break;
 
 
 	default:
@@ -3614,6 +3698,23 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 			msg->fgd_cmd, badcmd);
 		break;
 	}
+
+#ifdef CONFIG_LGE_PM_BATTERY_CYCLE
+	if (msg->fgd_cmd == FG_DAEMON_CMD_SET_SOC)
+		battery_cycle_update(gm);
+#endif
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+	if (msg->fgd_cmd == FG_DAEMON_CMD_SET_AGING_FACTOR) {
+		bm_debug("[AGING] FG_DAEMON_CMD_SET_AGING_FACTOR cmd:0x%x LG(%d, %d)\n",
+				msg->fgd_cmd, gm->bs_data.bat_aging_factor, gm->bs_data.bat_charge_full);
+	}
+
+	if (msg->fgd_cmd == FG_DAEMON_CMD_SET_QMAX_T_AGING) {
+		bm_err("[AGING] FG_DAEMON_CMD_SET_QMAX_T_AGING cmd:0x%x LG(%d, %d)\n",
+				msg->fgd_cmd, gm->bs_data.bat_aging_factor, gm->bs_data.bat_charge_full);
+		battery_aging_update(gm);
+	}
+#endif
 }
 
 void mtk_battery_netlink_handler(struct sk_buff *skb)
@@ -3904,7 +4005,11 @@ void sw_check_bat_plugout(struct mtk_battery *gm)
 			gm->bs_data.bat_status = POWER_SUPPLY_STATUS_UNKNOWN;
 			wakeup_fg_algo(gm, FG_INTR_BAT_PLUGOUT);
 			battery_update(gm);
+#ifdef CONFIG_LGE_PM
+			/* do not power-off here */
+#else /* MediaTek */
 			kernel_power_off();
+#endif
 		}
 	}
 }
@@ -4103,7 +4208,11 @@ static irqreturn_t bat_plugout_irq(int irq, void *data)
 		wakeup_fg_algo(gm, FG_INTR_BAT_PLUGOUT);
 		battery_update(gm);
 		fg_int_event(gm, EVT_INT_BAT_PLUGOUT);
+#ifdef CONFIG_LGE_PM_BATTERY_PRESENT
+		/* do not power-off here */
+#else /* MediaTek */
 		kernel_power_off();
+#endif
 	}
 	return IRQ_HANDLED;
 }
@@ -4134,6 +4243,11 @@ static irqreturn_t zcv_irq(int irq, void *data)
 		wakeup_fg_algo(gm, FG_INTR_FG_ZCV);
 		zcv_intr_en = 0;
 		gauge_set_property(GAUGE_PROP_ZCV_INTR_EN, zcv_intr_en);
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+		bm_err("[AGING][zcv_interrupt] car:%d zcv_curr:%d zcv:%d, slp_cur_avg:%d\n",
+			fg_coulomb, zcv_intr_curr, zcv,
+			gm->fg_cust_data.sleep_current_avg);
+#endif
 	}
 
 	fg_int_event(gm, EVT_INT_ZCV);

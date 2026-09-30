@@ -162,6 +162,38 @@ static char *pe4_state_to_str(int state)
 	return "PE4_UNKNOWN";
 }
 
+#ifdef CONFIG_LGE_PM
+static bool __pe4_check_setting(struct chg_alg_device *alg)
+{
+	struct mtk_pe40 *pe4 = dev_get_drvdata(&alg->dev);
+
+	switch (alg->config) {
+	case SINGLE_CHARGER:
+		if (pe4->input_current_limit1 == 0)
+			return false;
+
+		if (pe4->charging_current_limit1 == 0)
+			return false;
+
+		return true;
+	case DUAL_CHARGERS_IN_SERIES:
+		/* Fall through */
+	case DUAL_CHARGERS_IN_PARALLEL:
+		if (pe4->input_current_limit1 == 0
+				|| pe4->input_current_limit2 == 0)
+			return false;
+
+		if (pe4->charging_current_limit1 == 0
+				|| pe4->charging_current_limit2 == 0)
+			return false;
+
+		return true;
+	}
+
+	return false;
+}
+#endif
+
 static int _pe4_is_algo_ready(struct chg_alg_device *alg)
 {
 	struct mtk_pe40 *pe4;
@@ -196,6 +228,14 @@ static int _pe4_is_algo_ready(struct chg_alg_device *alg)
 				tmp,
 				pe4->high_temp_to_enter_pe40,
 				pe4->low_temp_to_enter_pe40);
+#ifdef CONFIG_LGE_PM
+			if (!__pe4_check_setting(alg) ||
+				uisoc > pe4->pe40_stop_battery_soc ||
+				uisoc == -1 ||
+				tmp > pe4->high_temp_to_enter_pe40 ||
+				tmp < pe4->low_temp_to_enter_pe40)
+				ret_value = ALG_NOT_READY;
+#else /* MediaTek */
 			if (pe4->input_current_limit1 != -1 ||
 				pe4->charging_current_limit1 != -1 ||
 				pe4->input_current_limit2 != -1 ||
@@ -205,6 +245,7 @@ static int _pe4_is_algo_ready(struct chg_alg_device *alg)
 				tmp > pe4->high_temp_to_enter_pe40 ||
 				tmp < pe4->low_temp_to_enter_pe40)
 				ret_value = ALG_NOT_READY;
+#endif
 		} else if (ret == ALG_TA_NOT_SUPPORT)
 			pe4->state = PE4_TA_NOT_SUPPORT;
 		break;
@@ -1240,9 +1281,14 @@ int mtk_pe40_cc_state(struct chg_alg_device *alg)
 		goto disable_hv;
 
 	if (pe40->avbus * oldibus <= PE40_MIN_WATT) {
+#ifdef CONFIG_LGE_PM
+		if (!__pe4_check_setting(alg))
+			mtk_pe40_end(alg, 1);
+#else /* MediaTek */
 		if (pe40->charging_current_limit1 != -1 ||
 			pe40->input_current_limit1 != -1)
 			mtk_pe40_end(alg, 1);
+#endif
 
 		else
 			mtk_pe40_end(alg, 1);
@@ -1511,6 +1557,20 @@ static int _pe4_start_algo(struct chg_alg_device *alg)
 			if (ret == ALG_READY) {
 				uisoc = pe4_hal_get_uisoc(alg);
 				tmp = pe4_hal_get_battery_temperature(alg);
+#ifdef CONFIG_LGE_PM
+				if (!__pe4_check_setting(alg) ||
+					uisoc > pe4->pe40_stop_battery_soc ||
+					uisoc == -1 ||
+					tmp > pe4->high_temp_to_enter_pe40 ||
+					tmp < pe4->low_temp_to_enter_pe40) {
+					ret_value = ALG_NOT_READY;
+					pe4_info("%d %d %d %d %d\n",
+						pe4->input_current_limit1,
+						pe4->charging_current_limit1,
+						pe4->pe40_stop_battery_soc,
+						pe4->high_temp_to_enter_pe40,
+						pe4->low_temp_to_enter_pe40);
+#else /* MediaTek */
 				if (pe4->input_current_limit1 != -1 ||
 					pe4->charging_current_limit1 != -1 ||
 					pe4->input_current_limit2 != -1 ||
@@ -1526,6 +1586,7 @@ static int _pe4_start_algo(struct chg_alg_device *alg)
 						pe4->pe40_stop_battery_soc,
 						pe4->high_temp_to_enter_pe40,
 						pe4->low_temp_to_enter_pe40);
+#endif
 				} else {
 					again = true;
 					pe4->state = PE4_INIT;
@@ -1960,10 +2021,6 @@ static int mtk_pe4_probe(struct platform_device *pdev)
 		wakeup_source_register(NULL, "PE4.0 suspend wakelock");
 
 	mtk_pe4_parse_dt(pe4, &pdev->dev);
-	pe4->bat_psy = devm_power_supply_get_by_phandle(&pdev->dev, "gauge");
-
-	if (IS_ERR_OR_NULL(pe4->bat_psy))
-		pe4_err("%s: devm power fail to get pe4->bat_psy\n", __func__);
 
 	pe4->alg = chg_alg_device_register("pe4", &pdev->dev,
 					pe4, &pe4_alg_ops, NULL);

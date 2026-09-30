@@ -56,6 +56,9 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/reboot.h>
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+#include <linux/power/charger_controller.h>
+#endif
 
 #include "mtk_pe2.h"
 #include "mtk_charger_algorithm_class.h"
@@ -67,6 +70,28 @@ int pe2_get_debug_level(void)
 {
 	return pe2_dbg_level;
 }
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+static void pe2_set_fastchg(struct chg_alg_device *alg, bool fastchg)
+{
+	struct mtk_pe20 *pe2 = dev_get_drvdata(&alg->dev);
+	struct power_supply *psy = power_supply_get_by_phandle(pe2->pdev->dev.of_node,
+			"charger-controller");
+	const char *type = fastchg ? "PE20" : NULL;
+	struct chgctrl_helper *helper;
+
+	pr_info("pe2_set_fastchg %s\n", (fastchg ? "true" : "false"));
+
+	if (IS_ERR_OR_NULL(psy))
+		return;
+
+	helper = power_supply_get_drvdata(psy);
+	if (helper && helper->set_fastchg_type)
+		helper->set_fastchg_type(helper, type);
+
+	power_supply_put(psy);
+}
+#endif
 
 static int pe2_plugout_reset(struct chg_alg_device *alg)
 {
@@ -124,6 +149,10 @@ static int pe2_plugout_reset(struct chg_alg_device *alg)
 			pe2_hal_enable_charger(alg, CHG2, false);
 			pe2_hal_charger_enable_chip(alg, CHG2, false);
 		}
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		pe2_set_fastchg(alg, false);
+#endif
 
 		pe2_dbg("%s: OK\n", __func__);
 		pe2->state = PE2_HW_READY;
@@ -341,7 +370,12 @@ static int pe20_set_ta_vchr(struct chg_alg_device *alg, u32 chr_volt)
 	int ret = 0, ret_value = 0;
 	int vchr_before, vchr_after, vchr_delta;
 	const u32 sw_retry_cnt_max = 3;
+#ifdef CONFIG_LGE_PM
+	/* Reduce retry_cnt_max for time getting TTF current */
+	const u32 retry_cnt_max = 2;
+#else /* Mediatek */
 	const u32 retry_cnt_max = 5;
+#endif
 	u32 sw_retry_cnt = 0, retry_cnt = 0;
 	struct mtk_pe20 *pe2;
 
@@ -480,6 +514,10 @@ static int __pe2_check_charger(struct chg_alg_device *alg)
 	if (ret < 0)
 		goto out;
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	pe2_set_fastchg(alg, true);
+#endif
+
 	pe2_dbg("%s: OK, state = %d\n",
 		__func__, pe2->state);
 
@@ -525,6 +563,10 @@ static int pe2_leave(struct chg_alg_device *alg)
 		pe2_err("%s:set mivr fail,ret:%d\n",
 			__func__, ret);
 	}
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	pe2_set_fastchg(alg, false);
+#endif
 
 	pe2_dbg("%s: OK\n", __func__);
 	return ret;
@@ -588,6 +630,57 @@ static char *pe2_state_to_str(int state)
 	return "PE2_UNKNOWN";
 }
 
+#ifdef CONFIG_LGE_PM
+static bool __pe2_check_setting(struct chg_alg_device *alg)
+{
+	struct mtk_pe20 *pe2 = dev_get_drvdata(&alg->dev);
+
+	switch (alg->config) {
+	case SINGLE_CHARGER:
+		if (pe2->input_current_limit1 != -1
+				&& pe2->input_current_limit1 < 500000)
+			return false;
+
+		if (pe2->charging_current_limit1 != -1
+				&& pe2->charging_current_limit1 < 1000000)
+			return false;
+
+		return true;
+	case DUAL_CHARGERS_IN_SERIES:
+		if (pe2->input_current_limit1 != -1
+				&& pe2->input_current_limit1 < 500000)
+			return false;
+
+		if (pe2->charging_current_limit1 != -1
+				&& pe2->charging_current_limit1 < 500000)
+			return false;
+		if (pe2->charging_current_limit1 != -1
+				&& pe2->charging_current_limit1 < 500000)
+			return false;
+
+		return true;
+	case DUAL_CHARGERS_IN_PARALLEL:
+		if (pe2->input_current_limit1 != -1
+				&& pe2->input_current_limit1 < 300000)
+			return false;
+		if (pe2->input_current_limit2 != -1
+				&& pe2->input_current_limit2 < 300000)
+			return false;
+
+		if (pe2->charging_current_limit1 != -1
+				&& pe2->charging_current_limit1 < 500000)
+			return false;
+		if (pe2->charging_current_limit1 != -1
+				&& pe2->charging_current_limit1 < 500000)
+			return false;
+
+		return true;
+	}
+
+	return false;
+}
+#endif
+
 static int _pe2_is_algo_ready(struct chg_alg_device *alg)
 {
 	struct mtk_pe20 *pe2;
@@ -610,11 +703,18 @@ static int _pe2_is_algo_ready(struct chg_alg_device *alg)
 		if (pe2_hal_get_charger_type(alg) !=
 			POWER_SUPPLY_TYPE_USB_DCP) {
 			ret_value = ALG_TA_NOT_SUPPORT;
+#ifdef CONFIG_LGE_PM
+		} else if (uisoc < pe2->ta_start_battery_soc ||
+			uisoc >= pe2->ta_stop_battery_soc ||
+			!__pe2_check_setting(alg)) {
+			ret_value = ALG_NOT_READY;
+#else /* MediaTek */
 		} else if (uisoc < pe2->ta_start_battery_soc ||
 			uisoc >= pe2->ta_stop_battery_soc ||
 			pe2->charging_current_limit1 != -1 ||
 			pe2->charging_current_limit2 != -1) {
 			ret_value = ALG_NOT_READY;
+#endif
 		} else {
 			ret_value = ALG_READY;
 		}
@@ -651,6 +751,12 @@ static int pe2_sc_set_charger(struct chg_alg_device *alg)
 		return -1;
 	}
 
+#ifdef CONFIG_LGE_PM
+	if (!__pe2_check_setting(alg)) {
+		pr_notice("invalid input/charging current, end PE2\n");
+		return -1;
+	}
+#endif
 
 	mutex_lock(&pe2->data_lock);
 	if (pe2->charging_current_limit1 != -1) {
@@ -723,6 +829,13 @@ static int pe2_dcs_set_charger(struct chg_alg_device *alg)
 		pr_notice("input/charging current is 0, end PE2\n");
 		return -1;
 	}
+
+#ifdef CONFIG_LGE_PM
+	if (!__pe2_check_setting(alg)) {
+		pr_notice("invalid input/charging current, end PE2\n");
+		return -1;
+	}
+#endif
 
 	mutex_lock(&pe2->data_lock);
 	if (pe2->input_current_limit1 != -1 &&
@@ -979,9 +1092,14 @@ static int _pe2_start_algo(struct chg_alg_device *alg)
 				again = true;
 			} else if (ret == ALG_TA_CHECKING)
 				ret_value = ALG_TA_CHECKING;
+#ifdef CONFIG_LGE_PM
+			else if (!__pe2_check_setting(alg))
+				ret_value = ALG_NOT_READY;
+#else /* MediaTek */
 			else if (pe2->charging_current_limit1 != -1 ||
 				pe2->charging_current_limit2 != -1)
 				ret_value = ALG_NOT_READY;
+#endif
 			else {
 				pe2->state = PE2_TA_NOT_SUPPORT;
 				ret_value = ALG_TA_NOT_SUPPORT;
@@ -1047,6 +1165,9 @@ static int _pe2_stop_algo(struct chg_alg_device *alg)
 			pe2_hal_enable_charger(alg, CHG2, false);
 			pe2_hal_charger_enable_chip(alg,
 			CHG2, false);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+			pe2_set_fastchg(alg, false);
+#endif
 		}
 	}
 
@@ -1351,10 +1472,6 @@ static int mtk_pe2_probe(struct platform_device *pdev)
 	pe2->vbus = 5000000;
 	pe2->state = PE2_HW_UNINIT;
 	mtk_pe2_parse_dt(pe2, &pdev->dev);
-	pe2->bat_psy = devm_power_supply_get_by_phandle(&pdev->dev, "gauge");
-
-	if (IS_ERR_OR_NULL(pe2->bat_psy))
-		pe2_err("%s: devm power fail to get bat_psy\n", __func__);
 
 	pe2->profile[0].vbat = 3400000;
 	pe2->profile[1].vbat = 3500000;
@@ -1367,6 +1484,18 @@ static int mtk_pe2_probe(struct platform_device *pdev)
 	pe2->profile[8].vbat = 4200000;
 	pe2->profile[9].vbat = 4300000;
 
+#ifdef CONFIG_LGE_PM
+	pe2->profile[0].vchr = 9000000;
+	pe2->profile[1].vchr = 9000000;
+	pe2->profile[2].vchr = 9000000;
+	pe2->profile[3].vchr = 9000000;
+	pe2->profile[4].vchr = 9000000;
+	pe2->profile[5].vchr = 9000000;
+	pe2->profile[6].vchr = 9000000;
+	pe2->profile[7].vchr = 9000000;
+	pe2->profile[8].vchr = 9000000;
+	pe2->profile[9].vchr = 9000000;
+#else /* MediaTek */
 	/*
 	pe2->profile[0].vchr = 8000000;
 	pe2->profile[1].vchr = 8500000;
@@ -1389,6 +1518,7 @@ static int mtk_pe2_probe(struct platform_device *pdev)
 	pe2->profile[7].vchr = 9000000;
 	pe2->profile[8].vchr = 9500000;
 	pe2->profile[9].vchr = 9500000;
+#endif
 
 	pe2->alg = chg_alg_device_register("pe2", &pdev->dev,
 					pe2, &pe2_alg_ops, NULL);

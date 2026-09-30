@@ -19,6 +19,9 @@
 #include "mtk_battery.h"
 #include "mtk_gauge.h"
 
+#ifdef CONFIG_LGE_PM_BATTERY_CYCLE
+#include <linux/power/battery_cycle.h>
+#endif
 
 /* ============================================================ */
 /* pmic control start*/
@@ -133,9 +136,9 @@
 #define PMIC_AUXADC_NAG_VBAT1_SEL_MASK			0x1
 #define PMIC_AUXADC_NAG_VBAT1_SEL_SHIFT			2
 
-#define PMIC_FG_ZCV_DET_TIME_ADDR                       0xd2e
-#define PMIC_FG_ZCV_DET_TIME_MASK                       0x3F
-#define PMIC_FG_ZCV_DET_TIME_SHIFT                      8
+#define PMIC_FG_ZCV_DET_TIME_ADDR				0xd2e
+#define PMIC_FG_ZCV_DET_TIME_MASK				0x3F
+#define PMIC_FG_ZCV_DET_TIME_SHIFT				8
 
 #define PMIC_FG_ZCV_CAR_TH_15_00_ADDR			0xd38
 #define PMIC_FG_ZCV_CAR_TH_15_00_MASK			0xFFFF
@@ -495,7 +498,7 @@ void set_rtc_spare_fg_value(struct mtk_gauge *gauge, u8 val)
 }
 
 static int fgauge_set_info(struct mtk_gauge *gauge,
-	enum gauge_property ginfo, unsigned int value)
+	enum gauge_property ginfo, int value)
 {
 	int value_mask = 0;
 	int sign_bit = 0;
@@ -620,6 +623,11 @@ static int fgauge_get_info(struct mtk_gauge *gauge,
 			*value = 0;
 		} else if (sign_bit == 1) {
 			*value = 0 - tmp_val;
+			bm_err("[%s]:GAUGE_PROP_SHUTDOWN_CAR: sign:%d, tmp_val:%d\n",
+			__func__, sign_bit, tmp_val);
+		} else {
+			/* sign_bit =0 case */
+			*value = tmp_val;
 			bm_err("[%s]:GAUGE_PROP_SHUTDOWN_CAR: sign:%d, tmp_val:%d\n",
 			__func__, sign_bit, tmp_val);
 		}
@@ -1813,6 +1821,8 @@ static int nafg_cnt_get(struct mtk_gauge *gauge,
 	bm_debug("[fg_bat_nafg][%s] %d [25_16 %d 15_0 %d]\n",
 			__func__, *nag_cnt, NAG_C_DLTV_CNT_H, NAG_C_DLTV_CNT);
 
+	/* dump_nag(gauge); */
+
 	return 0;
 }
 
@@ -1985,10 +1995,17 @@ static int boot_zcv_get(struct mtk_gauge *gauge_dev,
 	if (gm == NULL)
 		now_thr = 300;
 	else {
+#ifdef CONFIG_LGE_PM
+		if (now_temp > gm->fg_cust_data.hwocv_swocv_diff_lt_temp)
+			now_thr = gm->fg_cust_data.hwocv_swocv_diff;
+		else
+			now_thr = gm->fg_cust_data.hwocv_swocv_diff_lt;
+#else /* MediaTek */
 		if (now_temp > gm->ext_hwocv_swocv_lt_temp)
 			now_thr = gm->ext_hwocv_swocv;
 		else
 			now_thr = gm->ext_hwocv_swocv_lt;
+#endif
 	}
 
 	if (_hw_ocv_chgin < 25000)
@@ -2041,20 +2058,21 @@ static int boot_zcv_get(struct mtk_gauge *gauge_dev,
 				_flag_unreliable = 1;
 			}
 		} else {
-			/* fixme: swocv is workaround */
-			/* plug charger poweron but charger not ready */
-			/* should use swocv to workaround */
-			_hw_ocv = _sw_ocv;
-			_hw_ocv_src = FROM_SW_OCV;
 			if (_hw_ocv_chgin_rdy != 1) {
-				if (abs(_hw_ocv - _sw_ocv) > now_thr) {
-					_prev_hw_ocv = _hw_ocv;
-					_prev_hw_ocv_src = _hw_ocv_src;
-					_hw_ocv = _sw_ocv;
-					_hw_ocv_src = FROM_SW_OCV;
-					p->flag_hw_ocv_unreliable = true;
-					_flag_unreliable = 1;
-				}
+				_hw_ocv = _sw_ocv;
+				_hw_ocv_src = FROM_SW_OCV;
+			} else {
+				_hw_ocv = _hw_ocv_chgin;
+				_hw_ocv_src = FROM_CHR_IN;
+			}
+
+			if (abs(_hw_ocv - _sw_ocv) > now_thr) {
+				_prev_hw_ocv = _hw_ocv;
+				_prev_hw_ocv_src = _hw_ocv_src;
+				_hw_ocv = _sw_ocv;
+				_hw_ocv_src = FROM_SW_OCV;
+				p->flag_hw_ocv_unreliable = true;
+				_flag_unreliable = 1;
 			}
 		}
 	} else {
@@ -2145,6 +2163,12 @@ static int initial_set(struct mtk_gauge *gauge,
 
 	gauge->hw_status.pl_charger_status = is_charger_exist;
 
+#ifdef CONFIG_LGE_PM
+	if (bat_flag == 0)
+		gauge->hw_status.is_bat_plugout = 1;
+	else
+		gauge->hw_status.is_bat_plugout = 0;
+#else /* MediaTek */
 	if (is_charger_exist == 1) {
 		gauge->hw_status.is_bat_plugout = 1;
 		fgauge_set_info(gauge, GAUGE_PROP_2SEC_REBOOT, 0);
@@ -2154,12 +2178,17 @@ static int initial_set(struct mtk_gauge *gauge,
 		else
 			gauge->hw_status.is_bat_plugout = 0;
 	}
+#endif
 
 	fgauge_set_info(gauge, GAUGE_PROP_BAT_PLUG_STATUS, 1);
 	/*[12:8], 5 bits*/
 	gauge->hw_status.bat_plug_out_time = 31;
 
 	fgauge_read_RTC_boot_status(gauge);
+
+#ifdef CONFIG_LGE_PM_BATTERY_CYCLE
+	battery_persist_set_battery_removed(bat_flag ? 0 : 1);
+#endif
 
 	return 1;
 }
@@ -2210,6 +2239,12 @@ static int rtc_ui_soc_set(struct mtk_gauge *gauge,
 	spare3_reg_valid = (spare3_reg & 0x80);
 	new_spare3_reg = spare3_reg_valid + val;
 
+#ifdef CONFIG_LGE_PM
+	if (val < 0) {
+		new_spare3_reg = 0;
+		bm_err("[%s] set new_spare3_reg=0\n", __func__);
+	}
+#endif
 	set_rtc_spare_fg_value(gauge, new_spare3_reg);
 
 	bm_debug("[%s] ui_soc=%d, spare3_reg=0x%x, valid:%d, new_spare3_reg:0x%x\n",
@@ -3241,6 +3276,10 @@ static int mt6357_gauge_probe(struct platform_device *pdev)
 	gauge->psy_cfg.drv_data = gauge;
 	gauge->psy = power_supply_register(&pdev->dev, &gauge->psy_desc,
 			&gauge->psy_cfg);
+#ifdef CONFIG_LGE_PM
+	if (!IS_ERR(gauge->psy))
+		dev_set_uevent_suppress(&gauge->psy->dev, 1);
+#endif
 	mt6357_sysfs_create_group(gauge);
 	initial_set(gauge, 0, 0);
 	bat_create_netlink(pdev);

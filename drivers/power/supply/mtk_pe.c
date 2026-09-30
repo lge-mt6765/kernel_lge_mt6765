@@ -37,7 +37,9 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/reboot.h>
-
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+#include <linux/power/charger_controller.h>
+#endif
 #include "mtk_pe.h"
 #include "mtk_charger_algorithm_class.h"
 
@@ -112,6 +114,26 @@ int mtk_pe_reset_ta_vchr(struct chg_alg_device *alg)
 	return 0;
 }
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+static void pe_set_fastchg(struct chg_alg_device *alg, bool fastchg)
+{
+	struct device *dev = &alg->dev;
+	struct power_supply *psy = power_supply_get_by_phandle(dev->of_node,
+			"charger-controller");
+	const char *type = fastchg ? "PE" : NULL;
+	struct chgctrl_helper *helper;
+
+	if (IS_ERR_OR_NULL(psy))
+		return;
+
+	helper = power_supply_get_drvdata(psy);
+	if (helper && helper->set_fastchg_type)
+		helper->set_fastchg_type(helper, type);
+
+	power_supply_put(psy);
+}
+#endif
+
 static int pe_leave(struct chg_alg_device *alg, bool disable_charging)
 {
 	int ret = 0, ret_value;
@@ -135,6 +157,10 @@ static int pe_leave(struct chg_alg_device *alg, bool disable_charging)
 			__func__, ret);
 		ret_value = -EHAL;
 	}
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	pe_set_fastchg(alg, false);
+#endif
 
 	pe_dbg("%s: OK\n", __func__);
 	return ret;
@@ -281,6 +307,10 @@ static int pe_plugout_reset(struct chg_alg_device *alg)
 	if (ret < 0)
 		goto _err;
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	pe_set_fastchg(alg, false);
+#endif
+
 	pe_dbg("%s: OK\n", __func__);
 	return ret;
 
@@ -336,6 +366,10 @@ int __pe_check_charger(struct chg_alg_device *alg)
 	ret = pe_detect_ta(alg);
 	if (ret < 0)
 		goto out;
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	pe_set_fastchg(alg, true);
+#endif
 
 	pe_dbg("%s: OK\n",
 		__func__);
@@ -507,6 +541,9 @@ static int _pe_stop_algo(struct chg_alg_device *alg)
 	if (pe->state == PE_RUN) {
 		mtk_pe_reset_ta_vchr(alg);
 		pe->state = PE_HW_READY;
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		pe_set_fastchg(alg, false);
+#endif
 	}
 
 	return 0;
@@ -909,10 +946,6 @@ static int mtk_pe_probe(struct platform_device *pdev)
 	pe->ta_vchr_org = 5000000;
 
 	mtk_pe_parse_dt(pe, &pdev->dev);
-	pe->bat_psy = devm_power_supply_get_by_phandle(&pdev->dev, "gauge");
-	if (IS_ERR_OR_NULL(pe->bat_psy))
-		pe_err("%s: devm power fail to get bat_psy\n", __func__);
-
 	pe->alg = chg_alg_device_register("pe", &pdev->dev,
 					pe, &pe_alg_ops, NULL);
 

@@ -625,6 +625,28 @@ int charger_dev_enable_hidden_mode(struct charger_device *charger_dev, bool en)
 }
 EXPORT_SYMBOL(charger_dev_enable_hidden_mode);
 
+#ifdef CONFIG_LGE_PM
+int charger_dev_enable_ship_mode(struct charger_device *chg_dev, bool en)
+{
+	if (chg_dev != NULL && chg_dev->ops != NULL &&
+	    chg_dev->ops->enable_ship_mode)
+		return chg_dev->ops->enable_ship_mode(chg_dev, en);
+
+	return -ENOTSUPP;
+}
+EXPORT_SYMBOL(charger_dev_enable_ship_mode);
+
+int charger_dev_is_ship_mode_enabled(struct charger_device *chg_dev, bool *en)
+{
+	if (chg_dev != NULL && chg_dev->ops != NULL &&
+	    chg_dev->ops->is_ship_mode_enabled)
+		return chg_dev->ops->is_ship_mode_enabled(chg_dev, en);
+
+	return -ENOTSUPP;
+}
+EXPORT_SYMBOL(charger_dev_is_ship_mode_enabled);
+#endif
+
 static DEVICE_ATTR_RO(name);
 
 static struct attribute *charger_class_attrs[] = {

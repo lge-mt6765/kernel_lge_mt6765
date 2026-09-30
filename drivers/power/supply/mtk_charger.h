@@ -47,7 +47,7 @@ struct mtk_charger;
 #define V_CHARGER_MIN 4600000 /* 4.6 V */
 
 #define USB_CHARGER_CURRENT_SUSPEND		0 /* def CONFIG_USB_IF */
-#define USB_CHARGER_CURRENT_UNCONFIGURED	70000 /* 70mA */
+#define USB_CHARGER_CURRENT_UNCONFIGURED	100000 /* 100mA */
 #define USB_CHARGER_CURRENT_CONFIGURED		500000 /* 500mA */
 #define USB_CHARGER_CURRENT			500000 /* 500mA */
 #define AC_CHARGER_CURRENT			2050000
@@ -61,8 +61,12 @@ struct mtk_charger;
 #define MAX_DMIVR_CHARGER_CURRENT 1800000 /* 1.8 A */
 
 /* battery warning */
+#ifdef CONFIG_LGE_PM
+/* do not use battery warning */
+#else /* MediaTek */
 #define BATTERY_NOTIFY_CASE_0001_VCHARGER
 #define BATTERY_NOTIFY_CASE_0002_VBATTEMP
+#endif
 
 /* charging abnormal status */
 #define CHG_VBUS_OV_STATUS	(1 << 0)
@@ -199,6 +203,19 @@ struct charger_custom_data {
 
 };
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+struct chgctrl_data {
+	struct power_supply *psy;
+
+	int icl;
+	int fcc;
+	int vfloat;
+	int icl_boost;
+	bool fastchg;
+	int wless_pwr;
+};
+#endif
+
 struct charger_data {
 	int input_current_limit;
 	int charging_current_limit;
@@ -225,6 +242,9 @@ struct mtk_charger {
 	struct charger_device *chg2_dev;
 
 	struct charger_data chg_data[CHGS_SETTING_MAX];
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	struct chgctrl_data chgctrl;
+#endif
 	struct chg_limit_setting setting;
 	enum charger_configuration config;
 
@@ -236,20 +256,23 @@ struct mtk_charger {
 	struct power_supply_config psy_cfg2;
 	struct power_supply *psy2;
 
-	struct power_supply  *chg_psy;
-	struct power_supply  *bat_psy;
-
 	struct adapter_device *pd_adapter;
 	struct notifier_block pd_nb;
 	struct mutex pd_lock;
 	int pd_type;
 	bool pd_reset;
+#ifdef CONFIG_LGE_PM
+	int rp_curr;
+#endif
 
 	u32 bootmode;
 	u32 boottype;
 
 	int chr_type;
 	int usb_state;
+#ifdef CONFIG_LGE_PM
+	bool usb_compliance;
+#endif
 
 	struct mutex cable_out_lock;
 	int cable_out_cnt;
@@ -312,6 +335,9 @@ struct mtk_charger {
 	struct chg_alg_device *alg[MAX_ALG_NO];
 	struct notifier_block chg_alg_nb;
 	bool enable_hv_charging;
+#ifdef CONFIG_LGE_PM
+	bool force_enable_input;
+#endif
 
 	/* water detection */
 	bool water_detected;
@@ -345,5 +371,18 @@ extern void _wake_up_charger(struct mtk_charger *info);
 /* functions for other */
 extern int mtk_chg_enable_vbus_ovp(bool enable);
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+extern struct power_supply *chgctrl_get_power_supply(struct mtk_charger *info);
+extern int chgctrl_get_icl(struct mtk_charger *info);
+extern int chgctrl_get_fcc(struct mtk_charger *info);
+extern int chgctrl_get_vfloat(struct mtk_charger *info);
+extern bool chgctrl_get_fastchg(struct mtk_charger *info);
+extern int chgctrl_get_icl_boost(struct mtk_charger *info);
+extern int chgctrl_get_wless_pwr(struct mtk_charger *info);
+extern void chgctrl_set_typec_usb_type(struct mtk_charger *info,
+				       enum power_supply_usb_type type);
+extern void chgctrl_set_vbus_ov(struct mtk_charger *info, bool ov);
+extern void chgctrl_set_aicl(struct mtk_charger *info, int input_current_limit);
+#endif
 
 #endif /* __MTK_CHARGER_H */

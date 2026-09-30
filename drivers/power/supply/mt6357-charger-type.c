@@ -14,7 +14,9 @@
 #include <linux/regmap.h>
 #include <linux/power_supply.h>
 #include <mtk_musb.h>
-#include <linux/reboot.h>
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+#include <linux/power/charger_controller.h>
+#endif
 
 /* ============================================================ */
 /* pmic control start*/
@@ -89,20 +91,14 @@ struct mtk_charger_type {
 
 	int first_connect;
 	int bc12_active;
-	u32 bootmode;
-	u32 boottype;
-};
 
-struct tag_bootmode {
-	u32 size;
-	u32 tag;
-	u32 bootmode;
-	u32 boottype;
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	struct power_supply *chgctrl_psy;
+#endif
 };
 
 static enum power_supply_property chr_type_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
-	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_USB_TYPE,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 };
@@ -291,6 +287,103 @@ static unsigned int hw_bc11_DCD(struct mtk_charger_type *info)
 	return wChargerAvail;
 }
 
+#ifdef CONFIG_LGE_PM
+/*
+ * Apple Charger Detection
+ * - for legacy apple charger (rounded square)
+ *  0.5A : DP 1.5V ~ 2.3V , DM < 2.3V
+ *  1.0A : DP 1.5V ~ 2.3V , DM > 2.3V
+ *  2.1A : DP > 2.3V , DM < 2.3V
+ *  2.4A : DP > 2.3V , DM > 2.3V
+ * - Due to the limitation of AP, CHD_DP / CHD_DM will not over 1.8V.
+ *  So we check DP & DM when pull-down(50~150uA),
+ *  are over 0.375V to check Apple TA or not.
+ */
+static unsigned int hw_bc11_stepA1(struct mtk_charger_type *info)
+{
+	unsigned int wChargerAvailDP = 0;
+	unsigned int wChargerAvailDM = 0;
+
+	/* Check DM */
+	/* RG_bc11_IPD_EN[1.0] = 01 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_IPD_EN_ADDR,
+		PMIC_RG_BC11_IPD_EN_MASK,
+		PMIC_RG_BC11_IPD_EN_SHIFT,
+		0x1);
+	/* RG_bc11_VREF_VTH = [1:0]=00 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_VREF_VTH_ADDR,
+		PMIC_RG_BC11_VREF_VTH_MASK,
+		PMIC_RG_BC11_VREF_VTH_SHIFT,
+		0x0);
+	/* RG_bc11_CMP_EN[1.0] = 01 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_CMP_EN_ADDR,
+		PMIC_RG_BC11_CMP_EN_MASK,
+		PMIC_RG_BC11_CMP_EN_SHIFT,
+		0x1);
+	msleep(80);
+	wChargerAvailDM = bc11_get_register_value(info->regmap,
+		PMIC_RGS_BC11_CMP_OUT_ADDR,
+		PMIC_RGS_BC11_CMP_OUT_MASK,
+		PMIC_RGS_BC11_CMP_OUT_SHIFT);
+
+	/* RG_bc11_IPD_EN[1.0] = 00 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_IPD_EN_ADDR,
+		PMIC_RG_BC11_IPD_EN_MASK,
+		PMIC_RG_BC11_IPD_EN_SHIFT,
+		0x0);
+	/* RG_bc11_CMP_EN[1.0] = 00 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_CMP_EN_ADDR,
+		PMIC_RG_BC11_CMP_EN_MASK,
+		PMIC_RG_BC11_CMP_EN_SHIFT,
+		0x0);
+
+	/* Check DP */
+	/* RG_bc11_IPD_EN[1.0] = 10 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_IPD_EN_ADDR,
+		PMIC_RG_BC11_IPD_EN_MASK,
+		PMIC_RG_BC11_IPD_EN_SHIFT,
+		0x2);
+	/* RG_bc11_VREF_VTH = [1:0]=00 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_VREF_VTH_ADDR,
+		PMIC_RG_BC11_VREF_VTH_MASK,
+		PMIC_RG_BC11_VREF_VTH_SHIFT,
+		0x0);
+	/* RG_bc11_CMP_EN[1.0] = 10 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_CMP_EN_ADDR,
+		PMIC_RG_BC11_CMP_EN_MASK,
+		PMIC_RG_BC11_CMP_EN_SHIFT,
+		0x2);
+	msleep(80);
+	wChargerAvailDP = bc11_get_register_value(info->regmap,
+		PMIC_RGS_BC11_CMP_OUT_ADDR,
+		PMIC_RGS_BC11_CMP_OUT_MASK,
+		PMIC_RGS_BC11_CMP_OUT_SHIFT);
+
+	/* RG_bc11_IPD_EN[1.0] = 00 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_IPD_EN_ADDR,
+		PMIC_RG_BC11_IPD_EN_MASK,
+		PMIC_RG_BC11_IPD_EN_SHIFT,
+		0x0);
+	/* RG_bc11_CMP_EN[1.0] = 00 */
+	bc11_set_register_value(info->regmap,
+		PMIC_RG_BC11_CMP_EN_ADDR,
+		PMIC_RG_BC11_CMP_EN_MASK,
+		PMIC_RG_BC11_CMP_EN_SHIFT,
+		0x0);
+
+	return wChargerAvailDP | wChargerAvailDM;
+}
+#endif
+
 static unsigned int hw_bc11_stepA2(struct mtk_charger_type *info)
 {
 	unsigned int wChargerAvail = 0;
@@ -452,6 +545,41 @@ static void hw_bc11_done(struct mtk_charger_type *info)
 #endif
 }
 
+#ifdef CONFIG_LGE_PM
+static void dump_charger_name(enum power_supply_type type,
+			      enum power_supply_usb_type usb_type)
+{
+	switch (type) {
+	case POWER_SUPPLY_TYPE_UNKNOWN:
+		pr_info("charger type: %d, CHARGER_UNKNOWN\n", type);
+		break;
+	case POWER_SUPPLY_TYPE_USB:
+		pr_info("charger type: %d, Standard USB Host\n", type);
+		break;
+	case POWER_SUPPLY_TYPE_USB_CDP:
+		pr_info("charger type: %d, Charging USB Host\n", type);
+		break;
+	case POWER_SUPPLY_TYPE_USB_DCP:
+		switch (usb_type) {
+		case POWER_SUPPLY_USB_TYPE_UNKNOWN:
+			pr_info("charger type: %d, Non-standard Charger\n",
+					POWER_SUPPLY_TYPE_USB_FLOAT);
+			break;
+		case POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID:
+			pr_info("charger type: %d, Apple Charger\n",
+					POWER_SUPPLY_TYPE_APPLE_BRICK_ID);
+			break;
+		default:
+			pr_info("charger type: %d, Standard Charger\n", type);
+			break;
+		}
+		break;
+	default:
+		pr_info("charger type: %d, Not Defined!!!\n", type);
+		break;
+	}
+}
+#else /* MediaTek */
 static void dump_charger_name(int type)
 {
 	switch (type) {
@@ -477,6 +605,7 @@ static void dump_charger_name(int type)
 		break;
 	}
 }
+#endif
 
 static int get_charger_type(struct mtk_charger_type *info)
 {
@@ -484,8 +613,18 @@ static int get_charger_type(struct mtk_charger_type *info)
 
 	hw_bc11_init(info);
 	if (hw_bc11_DCD(info)) {
+#ifdef CONFIG_LGE_PM
+		if (hw_bc11_stepA1(info)) {
+			info->psy_desc.type = POWER_SUPPLY_TYPE_USB_DCP;
+			type = POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID;
+		} else {
+			info->psy_desc.type = POWER_SUPPLY_TYPE_USB_DCP;
+			type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		}
+#else /* MediaTek */
 		info->psy_desc.type = POWER_SUPPLY_TYPE_USB;
 		type = POWER_SUPPLY_USB_TYPE_DCP;
+#endif
 	} else {
 		if (hw_bc11_stepA2(info)) {
 			if (hw_bc11_stepB2(info)) {
@@ -501,12 +640,22 @@ static int get_charger_type(struct mtk_charger_type *info)
 		}
 	}
 
+#ifdef CONFIG_LGE_PM
+	if (info->psy_desc.type == POWER_SUPPLY_TYPE_USB_DCP
+			&& type == POWER_SUPPLY_USB_TYPE_DCP)
+		pr_info("charger type: skip bc11 release for BC12 DCP SPEC\n");
+	else
+		hw_bc11_done(info);
+
+	dump_charger_name(info->psy_desc.type, type);
+#else /* MediaTek */
 	if (type != POWER_SUPPLY_USB_TYPE_DCP)
 		hw_bc11_done(info);
 	else
 		pr_info("charger type: skip bc11 release for BC12 DCP SPEC\n");
 
 	dump_charger_name(info->psy_desc.type);
+#endif
 
 	return type;
 }
@@ -532,12 +681,34 @@ static int get_vbus_voltage(struct mtk_charger_type *info,
 	return ret;
 }
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+static void chgctrl_set_bc12_type(struct mtk_charger_type *info,
+				  enum power_supply_type type,
+				  enum power_supply_usb_type usb_type)
+{
+	struct power_supply *psy;
+	struct chgctrl_helper *helper;
+
+	if (IS_ERR_OR_NULL(info->chgctrl_psy)) {
+		info->chgctrl_psy = devm_power_supply_get_by_phandle(
+				&info->pdev->dev, "charger-controller");
+	}
+
+	if (IS_ERR_OR_NULL(info->chgctrl_psy))
+		return;
+
+	psy = info->chgctrl_psy;
+	helper = power_supply_get_drvdata(psy);
+	if (!helper || !helper->set_bc12_type)
+		return;
+
+	helper->set_bc12_type(helper, type, usb_type);
+}
+#endif
 
 void do_charger_detect(struct mtk_charger_type *info, bool en)
 {
-	union power_supply_propval prop_online = {0};
-	union power_supply_propval prop_type = {0};
-	union power_supply_propval prop_usb_type = {0};
+	union power_supply_propval prop, prop2, prop3;
 	int ret = 0;
 
 #ifndef CONFIG_TCPC_CLASS
@@ -547,20 +718,26 @@ void do_charger_detect(struct mtk_charger_type *info, bool en)
 	}
 #endif
 
-	prop_online.intval = en;
+	prop.intval = en;
 	if (en) {
 		ret = power_supply_set_property(info->psy,
-				POWER_SUPPLY_PROP_ONLINE, &prop_online);
+				POWER_SUPPLY_PROP_ONLINE, &prop);
 		ret = power_supply_get_property(info->psy,
-				POWER_SUPPLY_PROP_TYPE, &prop_type);
+				POWER_SUPPLY_PROP_TYPE, &prop2);
 		ret = power_supply_get_property(info->psy,
-				POWER_SUPPLY_PROP_USB_TYPE, &prop_usb_type);
-		pr_notice("type:%d usb_type:%d\n", prop_type.intval, prop_usb_type.intval);
+				POWER_SUPPLY_PROP_USB_TYPE, &prop3);
 	} else {
+		prop2.intval = POWER_SUPPLY_TYPE_UNKNOWN;
+		prop3.intval = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 		info->psy_desc.type = POWER_SUPPLY_TYPE_UNKNOWN;
 		info->type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
-		pr_notice("%s type:0 usb_type:0\n", __func__);
 	}
+
+	pr_notice("%s type:%d usb_type:%d\n", __func__, prop2.intval, prop3.intval);
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	chgctrl_set_bc12_type(info, info->psy_desc.type, info->type);
+#endif
 
 	power_supply_changed(info->psy);
 }
@@ -579,21 +756,6 @@ static void do_charger_detection_work(struct work_struct *data)
 	pr_notice("%s: chrdet:%d\n", __func__, chrdet);
 	if (chrdet)
 		do_charger_detect(info, chrdet);
-	else {
-		hw_bc11_done(info);
-		/* 8 = KERNEL_POWER_OFF_CHARGING_BOOT */
-		/* 9 = LOW_POWER_OFF_CHARGING_BOOT */
-		if (info->bootmode == 8 || info->bootmode == 9) {
-			pr_info("%s: Unplug Charger/USB\n", __func__);
-
-#ifndef CONFIG_TCPC_CLASS
-			pr_info("%s: system_state=%d\n", __func__,
-				system_state);
-			if (system_state != SYSTEM_POWER_OFF)
-				kernel_power_off();
-#endif
-		}
-	}
 }
 
 
@@ -606,21 +768,7 @@ irqreturn_t chrdet_int_handler(int irq, void *data)
 		PMIC_RGS_CHRDET_ADDR,
 		PMIC_RGS_CHRDET_MASK,
 		PMIC_RGS_CHRDET_SHIFT);
-	if (!chrdet) {
-		hw_bc11_done(info);
-		/* 8 = KERNEL_POWER_OFF_CHARGING_BOOT */
-		/* 9 = LOW_POWER_OFF_CHARGING_BOOT */
-		if (info->bootmode == 8 || info->bootmode == 9) {
-			pr_info("%s: Unplug Charger/USB\n", __func__);
 
-#ifndef CONFIG_TCPC_CLASS
-			pr_info("%s: system_state=%d\n", __func__,
-				system_state);
-			if (system_state != SYSTEM_POWER_OFF)
-				kernel_power_off();
-#endif
-		}
-	}
 	pr_notice("%s: chrdet:%d\n", __func__, chrdet);
 	do_charger_detect(info, chrdet);
 
@@ -639,13 +787,23 @@ static int psy_chr_type_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
+#ifdef CONFIG_LGE_PM
+		if (info->type == POWER_SUPPLY_USB_TYPE_UNKNOWN)
+			if (info->psy_desc.type == POWER_SUPPLY_TYPE_USB_DCP)
+				val->intval = 1;
+			else
+				val->intval = 0;
+		else
+			val->intval = info->bc12_active ? 1 : 0;
+#else /* MediaTek */
 		if (info->type == POWER_SUPPLY_USB_TYPE_UNKNOWN)
 			val->intval = 0;
 		else
 			val->intval = 1;
+#endif
 		break;
 	case POWER_SUPPLY_PROP_TYPE:
-		 val->intval = info->psy_desc.type;
+		val->intval = info->psy_desc.type;
 		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		val->intval = info->type;
@@ -674,6 +832,11 @@ int psy_chr_type_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_ONLINE:
 		info->type = get_charger_type(info);
 		break;
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		schedule_work(&info->chr_work);
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -697,6 +860,10 @@ static int mt_ac_get_property(struct power_supply *psy,
 		if ((info->type == POWER_SUPPLY_USB_TYPE_SDP) ||
 			(info->type == POWER_SUPPLY_USB_TYPE_CDP))
 			val->intval = 0;
+		/* Force to 1 in USB type B floated */
+		if ((info->type == POWER_SUPPLY_USB_TYPE_UNKNOWN) &&
+			(info->psy_desc.type == POWER_SUPPLY_TYPE_USB_DCP))
+				val->intval = 1;
 		break;
 	default:
 		return -EINVAL;
@@ -756,30 +923,6 @@ static char *mt6357_charger_supplied_to[] = {
 	"mtk-master-charger"
 };
 
-static int check_boot_mode(struct mtk_charger_type *info, struct device *dev)
-{
-	struct device_node *boot_node = NULL;
-	struct tag_bootmode *tag = NULL;
-
-	boot_node = of_parse_phandle(dev->of_node, "bootmode", 0);
-	if (!boot_node)
-		pr_notice("%s: failed to get boot mode phandle\n", __func__);
-	else {
-		tag = (struct tag_bootmode *)of_get_property(boot_node,
-							"atag,boot", NULL);
-		if (!tag)
-			pr_notice("%s: failed to get atag,boot\n", __func__);
-		else {
-			pr_notice("%s: size:0x%x tag:0x%x bootmode:0x%x boottype:0x%x\n",
-				__func__, tag->size, tag->tag,
-				tag->bootmode, tag->boottype);
-			info->bootmode = tag->bootmode;
-			info->boottype = tag->boottype;
-		}
-	}
-	return 0;
-}
-
 static int mt6357_charger_type_probe(struct platform_device *pdev)
 {
 	struct mtk_charger_type *info;
@@ -810,8 +953,6 @@ static int mt6357_charger_type_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, info);
 	info->pdev = pdev;
 	mutex_init(&info->ops_lock);
-
-	check_boot_mode(info, &pdev->dev);
 
 	info->psy_desc.name = "mtk_charger_type";
 	info->psy_desc.type = POWER_SUPPLY_TYPE_UNKNOWN;

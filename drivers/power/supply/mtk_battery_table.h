@@ -199,11 +199,12 @@
 #define BATTERY_TMP_TO_ENABLE_NAFG				-20
 /* #define GM30_DISABLE_NAFG */
 
-#define POWER_ON_CAR_CHR		5
+#define POWER_ON_CAR_CHR		150
 #define POWER_ON_CAR_NOCHR		-35
 
 #define SHUTDOWN_CAR_RATIO		1
 
+#define MIN_UISOC_AT_KPOC	100 /* 0.01% */
 
 /* different temp using different gauge 0% */
 #define MULTI_TEMP_GAUGE0		1
@@ -241,17 +242,17 @@
 
 /* using voltage to limit uisoc in 1% case */
 /* UI_LOW_LIMIT_VTH0=36000 means 3.6v */
-#define UI_LOW_LIMIT_EN		0
+#define UI_LOW_LIMIT_EN		1
 #define UI_LOW_LIMIT_SOC0	200
-#define UI_LOW_LIMIT_VTH0	34500
+#define UI_LOW_LIMIT_VTH0	34000
 #define UI_LOW_LIMIT_SOC1	200
-#define UI_LOW_LIMIT_VTH1	34500
+#define UI_LOW_LIMIT_VTH1	34000
 #define UI_LOW_LIMIT_SOC2	200
-#define UI_LOW_LIMIT_VTH2	34500
+#define UI_LOW_LIMIT_VTH2	34000
 #define UI_LOW_LIMIT_SOC3	200
-#define UI_LOW_LIMIT_VTH3	34500
+#define UI_LOW_LIMIT_VTH3	34000
 #define UI_LOW_LIMIT_SOC4	200
-#define UI_LOW_LIMIT_VTH4	34500
+#define UI_LOW_LIMIT_VTH4	34000
 #define UI_LOW_LIMIT_TIME	99999
 
 #define MOVING_BATTEMP_EN	1
@@ -427,6 +428,9 @@ int g_temperature[MAX_TABLE] = {
 };
 
 
+#ifdef CONFIG_LGE_PM_BATTERY_NTC
+#include CONFIG_LGE_PM_BATTERY_NTC_HEADER
+#else /* MediaTek */
 #define BAT_NTC_10 1
 #define BAT_NTC_47 0
 
@@ -493,6 +497,7 @@ struct fuelgauge_temperature Fg_Temperature_Table[21] = {
 		{60, 11210}
 };
 #endif
+#endif /* CONFIG_LGE_PM_BATTERY_NTC_HEADER */
 
 
 

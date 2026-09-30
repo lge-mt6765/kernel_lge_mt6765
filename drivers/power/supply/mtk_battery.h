@@ -109,6 +109,16 @@ enum battery_property {
 	BAT_PROP_INIT_DONE,
 	BAT_PROP_FG_RESET,
 	BAT_PROP_LOG_LEVEL,
+#ifdef CONFIG_LGE_PM
+	BAT_PROP_UISOC_VALID,
+	BAT_PROP_RAWSOC,
+	BAT_PROP_TTFSOC,
+#endif
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+	BAT_PROP_AGE,
+	BAT_PROP_AGE_LEVEL,
+	BAT_PROP_AGE_CONDITION,
+#endif
 };
 
 struct battery_data {
@@ -125,6 +135,10 @@ struct battery_data {
 	/* Add for Battery Service */
 	int bat_batt_vol;
 	int bat_batt_temp;
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+	int bat_charge_full;
+	int bat_aging_factor;
+#endif
 };
 
 enum fg_daemon_cmds {
@@ -240,7 +254,6 @@ enum fg_daemon_cmds {
 	FG_DAEMON_CMD_GET_SOC_DECIMAL_RATE,
 	FG_DAEMON_CMD_GET_DIFF_SOC_SET,
 	FG_DAEMON_CMD_SET_ZCV_INTR_EN,
-	FG_DAEMON_CMD_GET_IS_FORCE_FULL,
 
 	FG_DAEMON_CMD_FROM_USER_NUMBER
 
@@ -817,9 +830,6 @@ struct mtk_battery {
 	bool ntc_disable_nafg;
 	bool cmd_disable_nafg;
 
-/*battery full*/
-	bool is_force_full;
-
 	/*battery plug in out*/
 	int chr_type;
 	bool disable_plug_int;
@@ -830,6 +840,10 @@ struct mtk_battery {
 	struct timespec uisoc_oldtime;
 	int d_saved_car;
 	int tbat_precise;
+#ifdef CONFIG_LGE_PM
+	bool ui_soc_valid;
+	int keep_rtc_ui_soc;
+#endif
 
 	/*battery interrupt*/
 	/* coulomb interrupt */
@@ -867,6 +881,10 @@ struct mtk_battery {
 	int last_nafg_cnt;
 	struct timespec last_nafg_update_time;
 	bool is_nafg_broken;
+#ifdef CONFIG_LGE_PM
+	int old_pid;
+	int force_restart_daemon;
+#endif
 
 	/* information from LK */
 	signed int ptim_lk_v;
@@ -951,6 +969,10 @@ struct mtk_battery {
 	int (*resume)(struct mtk_battery *gm);
 
 	int log_level;
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	struct power_supply *chgctrl_psy;
+#endif
 };
 
 struct mtk_battery_sysfs_field_info {
@@ -1007,7 +1029,11 @@ extern void set_shutdown_vbat_lt(struct mtk_battery *gm,
 	int vbat_lt, int vbat_lt_lv1);
 extern void fg_sw_bat_cycle_accu(struct mtk_battery *gm);
 extern void notify_fg_chr_full(struct mtk_battery *gm);
+#ifdef CONFIG_LGE_PM_BATTERY_ID
+extern int fgauge_get_profile_id(struct mtk_battery *gm);
+#else /* MediaTek */
 extern int fgauge_get_profile_id(void);
+#endif
 extern void disable_fg(struct mtk_battery *gm);
 extern int get_shutdown_cond(struct mtk_battery *gm);
 extern int get_shutdown_cond_flag(struct mtk_battery *gm);

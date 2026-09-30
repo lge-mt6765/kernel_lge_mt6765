@@ -56,6 +56,9 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/reboot.h>
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+#include <linux/power/charger_controller.h>
+#endif
 
 #include "mtk_pd.h"
 #include "mtk_charger_algorithm_class.h"
@@ -93,6 +96,76 @@ static char *pd_state_to_str(int state)
 		, state);
 	return "PD_UNKNOWN";
 }
+
+#ifdef CONFIG_LGE_PM
+static bool __pd_check_setting(struct chg_alg_device *alg)
+{
+	struct mtk_pd *pd = dev_get_drvdata(&alg->dev);
+
+	switch (alg->config) {
+	case SINGLE_CHARGER:
+		if (pd->input_current_limit1 == 0)
+			return false;
+
+		if (pd->charging_current_limit1 == 0)
+			return false;
+
+		return true;
+	case DUAL_CHARGERS_IN_SERIES:
+		/* Fall through */
+	case DUAL_CHARGERS_IN_PARALLEL:
+		if (pd->input_current_limit1 == 0
+				|| pd->input_current_limit2 == 0)
+			return false;
+
+		if (pd->charging_current_limit1 == 0
+				|| pd->charging_current_limit2 == 0)
+			return false;
+
+		return true;
+	}
+
+	return false;
+}
+#endif
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+static void pd_set_fastchg(struct chg_alg_device *alg, bool fastchg)
+{
+	struct mtk_pd *pd = dev_get_drvdata(&alg->dev);
+	struct power_supply *psy = power_supply_get_by_phandle(pd->pdev->dev.of_node,
+			"charger-controller");
+	const char *type = fastchg ? "USB_PD" : NULL;
+	struct chgctrl_helper *helper;
+
+	pr_info("pd_set_fastchg %s\n", (fastchg ? "true" : "false"));
+
+	if (IS_ERR_OR_NULL(psy))
+		return;
+
+	helper = power_supply_get_drvdata(psy);
+	if (helper && helper->set_fastchg_type)
+		helper->set_fastchg_type(helper, type);
+
+	power_supply_put(psy);
+}
+static int pd_chgctrl_get_icl(struct chg_alg_device *alg)
+{
+	struct mtk_pd *pd = dev_get_drvdata(&alg->dev);
+	struct power_supply *psy = power_supply_get_by_phandle(pd->pdev->dev.of_node,
+			"charger-controller");
+	struct chgctrl_helper *helper;
+
+	if (IS_ERR_OR_NULL(psy))
+		return -1;
+
+	helper = power_supply_get_drvdata(psy);
+	if (!helper || !helper->get_icl)
+		return -1;
+
+	return helper->get_icl(helper);
+}
+#endif
 
 static int _pd_init_algo(struct chg_alg_device *alg)
 {
@@ -151,12 +224,18 @@ static int _pd_is_algo_ready(struct chg_alg_device *alg)
 		ret_value = pd_hal_is_pd_adapter_ready(alg);
 		if (ret_value == ALG_READY) {
 			uisoc = pd_hal_get_uisoc(alg);
+#ifdef CONFIG_LGE_PM
+			if (!__pd_check_setting(alg) ||
+				uisoc >= pd->pd_stop_battery_soc)
+				ret_value = ALG_NOT_READY;
+#else /* MediaTek */
 			if (pd->input_current_limit1 != -1 ||
 				pd->charging_current_limit1 != -1 ||
 				pd->input_current_limit2 != -1 ||
 				pd->charging_current_limit2 != -1 ||
 				uisoc >= pd->pd_stop_battery_soc)
 				ret_value = ALG_NOT_READY;
+#endif
 		} else if (ret_value == ALG_TA_NOT_SUPPORT)
 			pd->state = PD_TA_NOT_SUPPORT;
 		else if (ret_value == ALG_TA_CHECKING)
@@ -498,6 +577,9 @@ int __mtk_pdc_get_setting(struct chg_alg_device *alg, int *newvbus, int *newcur,
 	bool chg2_mivr = false;
 	int chg_cnt, i, is_chip_enabled;
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	int icl_ma = 0;
+#endif
 
 	__mtk_pdc_init_table(alg);
 	__mtk_pdc_get_reset_idx(alg);
@@ -575,6 +657,20 @@ int __mtk_pdc_get_setting(struct chg_alg_device *alg, int *newvbus, int *newcur,
 		pd->ibus_err,
 		ibus);
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	icl_ma = pd_chgctrl_get_icl(alg);
+	if (icl_ma > 0)
+		icl_ma /= 1000; /* convert uA to mA */
+
+	pd_max_watt = cap->max_mv[idx] * (min(cap->ma[idx], icl_ma)
+			/ 100 * (100 - pd->ibus_err) - 100);
+
+	pd_dbg("pd_max_watt:%d %d %d %d %d %d\n", idx,
+		cap->max_mv[idx],
+		cap->ma[idx], icl_ma,
+		pd->ibus_err,
+		pd_max_watt);
+#else /* MediaTek */
 	pd_max_watt = cap->max_mv[idx] * (cap->ma[idx]
 			/ 100 * (100 - pd->ibus_err) - 100);
 
@@ -584,6 +680,7 @@ int __mtk_pdc_get_setting(struct chg_alg_device *alg, int *newvbus, int *newcur,
 		pd->ibus_err,
 		pd_max_watt);
 
+#endif
 
 	now_max_watt = cap->max_mv[idx] * ibus + chg2_watt;
 	pd_dbg("now_max_watt:%d %d %d %d %d\n", idx,
@@ -891,15 +988,24 @@ static int _pd_start_algo(struct chg_alg_device *alg)
 				pd->state = PD_TA_NOT_SUPPORT;
 			else if (ret_value == ALG_READY) {
 				uisoc = pd_hal_get_uisoc(alg);
+#ifdef CONFIG_LGE_PM
+				if (!__pd_check_setting(alg) ||
+					uisoc >= pd->pd_stop_battery_soc)
+					ret_value = ALG_NOT_READY;
+#else /* MediaTek */
 				if (pd->input_current_limit1 != -1 ||
 					pd->charging_current_limit1 != -1 ||
 					pd->input_current_limit2 != -1 ||
 					pd->charging_current_limit2 != -1 ||
 					uisoc >= pd->pd_stop_battery_soc)
 					ret_value = ALG_NOT_READY;
+#endif
 				else {
 					pd->state = PD_RUN;
 					again = true;
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+					pd_set_fastchg(alg, true);
+#endif
 				}
 			}
 			break;
@@ -971,6 +1077,9 @@ static int _pd_stop_algo(struct chg_alg_device *alg)
 			pd_hal_charger_enable_chip(alg,
 			CHG2, false);
 		}
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		pd_set_fastchg(alg, false);
+#endif
 		break;
 	default:
 		pd_err("PD unknown state:%d\n", pd->state);
@@ -1084,6 +1193,9 @@ static int pd_plugout_reset(struct chg_alg_device *alg)
 		pd->pd_reset_idx = -1;
 		pd->pd_boost_idx = 0;
 		pd->pd_buck_idx = 0;
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		pd_set_fastchg(alg, false);
+#endif
 		break;
 	default:
 		pd_err("PD unknown state:%d\n", pd->state);
@@ -1122,7 +1234,6 @@ static void mtk_pd_parse_dt(struct mtk_pd *pd,
 	struct device_node *np = dev->of_node;
 	u32 val;
 
-	val = 0;
 	if (of_property_read_u32(np, "min_charger_voltage", &val) >= 0)
 		pd->min_charger_voltage = val;
 	else {
@@ -1130,8 +1241,7 @@ static void mtk_pd_parse_dt(struct mtk_pd *pd,
 		pd->min_charger_voltage = V_CHARGER_MIN;
 	}
 
-	/*	 PD	 */
-	val = 0;
+	/* PD */
 	if (of_property_read_u32(np, "pd_vbus_upper_bound", &val) >= 0) {
 		pd->vbus_h = val / 1000;
 	} else {
@@ -1301,9 +1411,6 @@ static int mtk_pd_probe(struct platform_device *pdev)
 	mutex_init(&pd->access_lock);
 	mutex_init(&pd->data_lock);
 	mtk_pd_parse_dt(pd, &pdev->dev);
-	pd->bat_psy = devm_power_supply_get_by_phandle(&pdev->dev, "gauge");
-	if (IS_ERR_OR_NULL(pd->bat_psy))
-		pd_err("%s: devm power fail to get bat_psy\n", __func__);
 
 	pd->alg = chg_alg_device_register("pd", &pdev->dev,
 					pd, &pd_alg_ops, NULL);

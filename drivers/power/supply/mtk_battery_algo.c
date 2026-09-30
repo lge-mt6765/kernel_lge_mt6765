@@ -101,11 +101,23 @@ int get_charger_status(struct mtk_battery *gm)
 {
 	int charger_status = 0;
 
+#ifdef CONFIG_LGE_PM
+	switch (gm->bs_data.bat_status) {
+	case POWER_SUPPLY_STATUS_NOT_CHARGING:
+	case POWER_SUPPLY_STATUS_DISCHARGING:
+		charger_status = -1;
+		break;
+	default:
+		charger_status = 0;
+		break;
+	}
+#else /* MediaTek */
 	if (gm->bs_data.bat_status ==
 				POWER_SUPPLY_STATUS_NOT_CHARGING)
 		charger_status = -1;
 	else
 		charger_status = 0;
+#endif
 
 	return charger_status;
 }
@@ -1793,6 +1805,15 @@ void fgr_set_int1(struct mtk_battery *gm)
 	bm_debug("[%s] done\n", __func__);
 }
 
+#ifdef CONFIG_LGE_PM
+static void mtk_battery_shutdown(struct mtk_battery *gm)
+{
+	if(gm->keep_rtc_ui_soc == 0) {
+		gauge_set_property(GAUGE_PROP_RTC_UI_SOC, -1);
+	}
+}
+#endif
+
 void battery_algo_init(struct mtk_battery *gm)
 {
 	int is_bat_exist;
@@ -1807,6 +1828,10 @@ void battery_algo_init(struct mtk_battery *gm)
 	gauge_get_property(GAUGE_PROP_BATTERY_EXIST, &is_bat_exist);
 	bm_err("MTK Battery algo init bat_exist:%d\n",
 		is_bat_exist);
+
+#ifdef CONFIG_LGE_PM
+	gm->shutdown = mtk_battery_shutdown;
+#endif
 
 	if (is_bat_exist) {
 		fgr_construct_table_by_temp(gm, true,

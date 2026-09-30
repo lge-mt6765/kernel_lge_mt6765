@@ -57,8 +57,17 @@
 #include <linux/of_address.h>
 #include <linux/reboot.h>
 
+#include <mtk_musb.h>
+
 #include "mtk_charger.h"
 
+#ifdef CONFIG_LGE_SAR_CONTROLLER_USB_DETECT
+extern void sar_controller_notify_connect(u32 type, bool is_connected);
+#endif
+
+#if defined (CONFIG_LGE_TOUCH_CORE)
+extern void touch_notify_connect(u32 type);
+#endif
 struct tag_bootmode {
 	u32 size;
 	u32 tag;
@@ -114,6 +123,41 @@ bool is_disable_charger(struct mtk_charger *info)
 		return true;
 	else
 		return false;
+}
+
+void BATTERY_SetUSBState(int usb_state_value)
+{
+	static struct mtk_charger *pinfo;
+	struct power_supply *psy;
+
+	if (pinfo == NULL) {
+		psy = power_supply_get_by_name("mtk-master-charger");
+		if (psy == NULL) {
+			chr_err("%s: psy is not ready\n", __func__);
+			return;
+		}
+
+		pinfo = (struct mtk_charger *)power_supply_get_drvdata(psy);
+		if (pinfo == NULL) {
+			chr_err("%s: mtk_charger is null\n", __func__);
+			return;
+		}
+	}
+
+	if (is_disable_charger(pinfo)) {
+		chr_err("%s: in FPGA/EVB, no service\n", __func__);
+	} else {
+		if (usb_state_value < USB_SUSPEND ||
+			usb_state_value > USB_CONFIGURED) {
+			chr_err("%s: restore to default value\n", __func__);
+			usb_state_value = USB_UNCONFIGURED;
+		} else {
+			chr_err("%s set usb_state = %d\n", __func__,
+				usb_state_value);
+			if (pinfo)
+				pinfo->usb_state = usb_state_value;
+		}
+	}
 }
 
 int _mtk_enable_charging(struct mtk_charger *info,
@@ -493,10 +537,8 @@ static void check_battery_exist(struct mtk_charger *info)
 
 #ifdef FIXME
 	if (count >= 3) {
-		/*1 = META_BOOT, 5 = ADVMETA_BOOT*/
-		/*6 = ATE_FACTORY_BOOT */
-		if (boot_mode == 1 || boot_mode == 5 ||
-		    boot_mode == 6)
+		if (boot_mode == META_BOOT || boot_mode == ADVMETA_BOOT ||
+		    boot_mode == ATE_FACTORY_BOOT)
 			chr_info("boot_mode = %d, bypass battery check\n",
 				boot_mode);
 		else {
@@ -770,18 +812,6 @@ static ssize_t ADC_Charger_Voltage_show(struct device *dev,
 
 static DEVICE_ATTR_RO(ADC_Charger_Voltage);
 
-static ssize_t Charger_Config_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	struct mtk_charger *pinfo = dev->driver_data;
-	int chg_cfg = pinfo->config;
-
-	chr_err("%s: %d\n", __func__, chg_cfg);
-	return sprintf(buf, "%d\n", chg_cfg);
-}
-
-static DEVICE_ATTR_RO(Charger_Config);
-
 static ssize_t input_current_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
@@ -878,6 +908,136 @@ static ssize_t BatteryNotify_store(struct device *dev,
 }
 
 static DEVICE_ATTR_RW(BatteryNotify);
+
+#ifdef CONFIG_LGE_PM
+static ssize_t safety_timer_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct mtk_charger *pinfo = dev_get_drvdata(dev);
+	bool safety_timer_en = false;
+
+	charger_dev_is_safety_timer_enabled(pinfo->chg1_dev, &safety_timer_en);
+
+	if (pinfo->sw_safety_timer_setting == true) {
+		if (pinfo->enable_sw_safety_timer == true)
+			safety_timer_en = true;
+	}
+
+	return sprintf(buf, "%d\n", safety_timer_en ? 1 : 0);
+}
+
+static ssize_t safety_timer_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	struct mtk_charger *pinfo = dev_get_drvdata(dev);
+	unsigned int enable = 0;
+	int ret = 0;
+
+	if (buf == NULL || size == 0)
+		return size;
+
+	ret = kstrtou32(buf, 10, &enable);
+	if (ret != 0)
+		return size;
+
+	ret = charger_dev_enable_safety_timer(pinfo->chg1_dev, enable);
+
+	if (pinfo->sw_safety_timer_setting == true) {
+		pinfo->enable_sw_safety_timer = enable ? true : false;
+		ret = 0;
+	}
+
+	if (ret < 0) {
+		chr_err("%s: failed to %s safety timer\n", __func__,
+				enable ? "enable" : "disable");
+		return ret;
+	}
+
+	chr_info("%s: safety timer %s\n", __func__,
+			enable ? "enabled" : "disabled");
+
+	return size;
+}
+
+static DEVICE_ATTR(safety_timer, 0664, safety_timer_show, safety_timer_store);
+
+static ssize_t ship_mode_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct mtk_charger *pinfo = dev_get_drvdata(dev);
+	bool ship_mode_en = false;
+
+	charger_dev_is_ship_mode_enabled(pinfo->chg1_dev, &ship_mode_en);
+
+	return sprintf(buf, "%d\n", ship_mode_en ? 1 : 0);
+}
+
+static ssize_t ship_mode_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t size)
+{
+	struct mtk_charger *pinfo = dev_get_drvdata(dev);
+	unsigned int enable = 0;
+	int ret = 0;
+
+	if (buf == NULL || size == 0)
+		return size;
+
+	ret = kstrtou32(buf, 10, &enable);
+	if (ret != 0)
+		return size;
+
+	ret = charger_dev_enable_ship_mode(pinfo->chg1_dev,
+			enable ? true : false);
+	if (ret < 0) {
+		chr_err("%s: failed to %s ship mode\n", __func__,
+				enable ? "enable" : "disable");
+		return ret;
+	}
+
+	chr_info("%s: ship mode %s\n", __func__,
+			enable ? "enabled" : "disabled");
+
+	return size;
+}
+
+static DEVICE_ATTR(ship_mode, 0664, ship_mode_show, ship_mode_store);
+
+static ssize_t usb_compliance_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct mtk_charger *pinfo = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", pinfo->usb_compliance ? 1 : 0);
+}
+
+static ssize_t usb_compliance_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t size)
+{
+	struct mtk_charger *pinfo = dev_get_drvdata(dev);
+	unsigned int usb_compliance = 0;
+	int ret = 0;
+
+	if (buf == NULL || size == 0)
+		return size;
+
+	ret = kstrtou32(buf, 10, &usb_compliance);
+	if (ret != 0)
+		return size;
+
+	pinfo->usb_compliance = usb_compliance ? 1 : 0;
+
+	chr_info("%s: usb compliance %s\n", __func__,
+			usb_compliance ? "enabled" : "disabled");
+
+	return size;
+}
+
+static DEVICE_ATTR(usb_compliance, 0664,
+		usb_compliance_show, usb_compliance_store);
+#endif
 
 /* procfs */
 static int mtk_chg_current_cmd_show(struct seq_file *m, void *data)
@@ -1063,6 +1223,7 @@ static const struct file_operations mtk_chg_en_safety_timer_fops = {
 	.release = single_release,
 	.write = mtk_chg_en_safety_timer_write,
 };
+
 
 int mtk_chg_enable_vbus_ovp(bool enable)
 {
@@ -1265,7 +1426,9 @@ static void charger_check_status(struct mtk_charger *info)
 			goto stop_charging;
 		}
 	} else {
-
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		/* use LG charging scenario */
+#else /* MediaTek */
 		if (thermal->enable_min_charge_temp) {
 			if (temperature < thermal->min_charge_temp) {
 				chr_err("Battery Under Temperature or NTC fail %d %d\n",
@@ -1307,14 +1470,25 @@ static void charger_check_status(struct mtk_charger *info)
 				goto stop_charging;
 			}
 		}
+#endif
 	}
 
 	mtk_chg_get_tchg(info);
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	if (!mtk_chg_check_vbus(info)) {
+		chgctrl_set_vbus_ov(info, true);
+		charging = false;
+		goto stop_charging;
+	} else {
+		chgctrl_set_vbus_ov(info, false);
+	}
+#else /* MediaTek */
 	if (!mtk_chg_check_vbus(info)) {
 		charging = false;
 		goto stop_charging;
 	}
+#endif
 
 	if (info->cmd_discharging)
 		charging = false;
@@ -1511,27 +1685,21 @@ static bool mtk_is_charger_on(struct mtk_charger *info)
 			mutex_unlock(&info->cable_out_lock);
 		}
 	}
+#if defined (CONFIG_LGE_TOUCH_CORE)
+	touch_notify_connect(info->chr_type);
+#endif
+
+#ifdef CONFIG_LGE_SAR_CONTROLLER_USB_DETECT
+	if (info->chr_type == POWER_SUPPLY_USB_TYPE_UNKNOWN)
+		sar_controller_notify_connect(info->chr_type, false);
+	else
+		sar_controller_notify_connect(info->chr_type, true);
+#endif
 
 	if (chr_type == POWER_SUPPLY_TYPE_UNKNOWN)
 		return false;
 
 	return true;
-}
-
-static void kpoc_power_off_check(struct mtk_charger *info)
-{
-	unsigned int boot_mode = info->bootmode;
-	int vbus = 0;
-
-	/* 8 = KERNEL_POWER_OFF_CHARGING_BOOT */
-	/* 9 = LOW_POWER_OFF_CHARGING_BOOT */
-	if (boot_mode == 8 || boot_mode == 9) {
-		vbus = get_vbus(info);
-		if (vbus >= 0 && vbus < 2500 && !mtk_is_charger_on(info) && !info->pd_reset) {
-			chr_err("Unplug Charger/USB in KPOC mode, vbus=%d, shutdown\n", vbus);
-			kernel_power_off();
-		}
-	}
 }
 
 static char *dump_charger_type(int type)
@@ -1547,6 +1715,10 @@ static char *dump_charger_type(int type)
 		return "std";
 	case POWER_SUPPLY_TYPE_USB_FLOAT:
 		return "nonstd";
+#ifdef CONFIG_LGE_PM
+	case POWER_SUPPLY_TYPE_APPLE_BRICK_ID:
+		return "apple";
+#endif
 	default:
 		return "unknown";
 	}
@@ -1564,9 +1736,13 @@ static int charger_routine_thread(void *arg)
 			(info->charger_thread_timeout == true));
 
 		while (is_module_init_done == false) {
-			if (charger_init_algo(info) == true)
+			if (charger_init_algo(info) == true) {
 				is_module_init_done = true;
-			else {
+#ifdef CONFIG_LGE_PM
+				if (is_battery_exist(info) == true)
+					charger_dev_enable_termination(info->chg1_dev, true);
+#endif
+			} else {
 				chr_err("charger_init fail\n");
 				msleep(5000);
 			}
@@ -1599,7 +1775,6 @@ static int charger_routine_thread(void *arg)
 		check_battery_exist(info);
 		check_dynamic_mivr(info);
 		charger_check_status(info);
-		kpoc_power_off_check(info);
 
 		if (is_disable_charger(info) == false &&
 			is_charger_on == true &&
@@ -1712,11 +1887,6 @@ static int mtk_charger_setup_files(struct platform_device *pdev)
 	ret = device_create_file(&(pdev->dev), &dev_attr_ADC_Charger_Voltage);
 	if (ret)
 		goto _out;
-
-	ret = device_create_file(&(pdev->dev), &dev_attr_Charger_Config);
-	if (ret)
-		goto _out;
-
 	ret = device_create_file(&(pdev->dev), &dev_attr_input_current);
 	if (ret)
 		goto _out;
@@ -1729,6 +1899,23 @@ static int mtk_charger_setup_files(struct platform_device *pdev)
 	ret = device_create_file(&(pdev->dev), &dev_attr_BatteryNotify);
 	if (ret)
 		goto _out;
+
+#ifdef CONFIG_LGE_PM
+	/* safety timer */
+	ret = device_create_file(&(pdev->dev), &dev_attr_safety_timer);
+	if (ret)
+		goto _out;
+
+	/* ship mode */
+	ret = device_create_file(&(pdev->dev), &dev_attr_ship_mode);
+	if (ret)
+		goto _out;
+
+	/* usb compliance */
+	ret = device_create_file(&(pdev->dev), &dev_attr_usb_compliance);
+	if (ret)
+		goto _out;
+#endif
 
 	battery_dir = proc_mkdir("mtk_battery_cmd", NULL);
 	if (!battery_dir) {
@@ -1921,6 +2108,11 @@ int psy_charger_set_property(struct power_supply *psy,
 		info->chg_data[idx].thermal_input_current_limit =
 			val->intval;
 		break;
+#ifdef CONFIG_LGE_PM
+	case POWER_SUPPLY_PROP_ONLINE:
+		info->force_enable_input = val->intval ? true : false;
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -1929,31 +2121,75 @@ int psy_charger_set_property(struct power_supply *psy,
 	return 0;
 }
 
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+static inline int utom(int val)
+{
+	return val >= 0 ? val / 1000 : val;
+}
+
+static void chgctrl_update(struct mtk_charger *info)
+{
+	info->chgctrl.icl = chgctrl_get_icl(info);
+	info->chgctrl.fcc = chgctrl_get_fcc(info);
+	info->chgctrl.vfloat = chgctrl_get_vfloat(info);
+	info->chgctrl.fastchg = chgctrl_get_fastchg(info);
+	info->chgctrl.icl_boost = chgctrl_get_icl_boost(info);
+	info->chgctrl.wless_pwr = chgctrl_get_wless_pwr(info);
+
+	pr_notice("[CHGCTRL]icl=%d, fcc=%d, vfloat=%d, fastchg=%d, "
+		"boost=%d, wless=%d\n",
+		utom(info->chgctrl.icl), utom(info->chgctrl.fcc),
+		utom(info->chgctrl.vfloat), info->chgctrl.fastchg ? 1 : 0,
+		utom(info->chgctrl.icl_boost), utom(info->chgctrl.wless_pwr));
+}
+#endif
+
 static void mtk_charger_external_power_changed(struct power_supply *psy)
 {
 	struct mtk_charger *info;
+#ifdef CONFIG_LGE_PM
+	union power_supply_propval prop, prop2, prop3;
+#else /* MediaTek */
 	union power_supply_propval prop, prop2;
+#endif
 	struct power_supply *chg_psy = NULL;
 	int ret;
 
 	info = (struct mtk_charger *)power_supply_get_drvdata(psy);
-	chg_psy = info->chg_psy;
-
+	chg_psy = devm_power_supply_get_by_phandle(&info->pdev->dev,
+						       "charger");
 	if (IS_ERR_OR_NULL(chg_psy)) {
 		pr_notice("%s Couldn't get chg_psy\n", __func__);
-		chg_psy = devm_power_supply_get_by_phandle(&info->pdev->dev,
-			"charger");
-		info->chg_psy = chg_psy;
 	} else {
+#ifdef CONFIG_LGE_PM
+		ret = power_supply_get_property(chg_psy,
+			POWER_SUPPLY_PROP_ONLINE, &prop);
+		ret = power_supply_get_property(chg_psy,
+			POWER_SUPPLY_PROP_TYPE, &prop2);
+		ret = power_supply_get_property(chg_psy,
+			POWER_SUPPLY_PROP_USB_TYPE, &prop3);
+#else /* MediaTek */
 		ret = power_supply_get_property(chg_psy,
 			POWER_SUPPLY_PROP_ONLINE, &prop);
 		ret = power_supply_get_property(chg_psy,
 			POWER_SUPPLY_PROP_USB_TYPE, &prop2);
+#endif
 	}
 
+#ifdef CONFIG_LGE_PM
+	pr_notice("%s event, name:%s online:%d type:(%d,%d) vbus:%d\n", __func__,
+		psy->desc->name, prop.intval, prop2.intval, prop3.intval,
+		get_vbus(info));
+#else /* MediaTek */
 	pr_notice("%s event, name:%s online:%d type:%d vbus:%d\n", __func__,
 		psy->desc->name, prop.intval, prop2.intval,
 		get_vbus(info));
+#endif
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	chgctrl_update(info);
+#endif
 
 	mtk_is_charger_on(info);
 	_wake_up_charger(info);
@@ -1975,7 +2211,14 @@ int notify_adapter_event(struct notifier_block *notifier,
 		chr_err("PD Notify Detach\n");
 		pinfo->pd_type = MTK_PD_CONNECT_NONE;
 		mutex_unlock(&pinfo->pd_lock);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo,
+				POWER_SUPPLY_USB_TYPE_UNKNOWN);
+#endif
 		/* reset PE40 */
+#ifdef CONFIG_LGE_PM
+		_wake_up_charger(pinfo);
+#endif
 		break;
 
 	case MTK_PD_CONNECT_HARD_RESET:
@@ -1984,6 +2227,10 @@ int notify_adapter_event(struct notifier_block *notifier,
 		pinfo->pd_type = MTK_PD_CONNECT_NONE;
 		pinfo->pd_reset = true;
 		mutex_unlock(&pinfo->pd_lock);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo,
+				POWER_SUPPLY_USB_TYPE_UNKNOWN);
+#endif
 		_wake_up_charger(pinfo);
 		/* reset PE40 */
 		break;
@@ -1993,7 +2240,13 @@ int notify_adapter_event(struct notifier_block *notifier,
 		chr_err("PD Notify fixe voltage ready\n");
 		pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK;
 		mutex_unlock(&pinfo->pd_lock);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo, POWER_SUPPLY_USB_TYPE_PD);
+#endif
 		/* PD is ready */
+#ifdef CONFIG_LGE_PM
+		_wake_up_charger(pinfo);
+#endif
 		break;
 
 	case MTK_PD_CONNECT_PE_READY_SNK_PD30:
@@ -2001,6 +2254,9 @@ int notify_adapter_event(struct notifier_block *notifier,
 		chr_err("PD Notify PD30 ready\r\n");
 		pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK_PD30;
 		mutex_unlock(&pinfo->pd_lock);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo, POWER_SUPPLY_USB_TYPE_PD);
+#endif
 		/* PD30 is ready */
 		break;
 
@@ -2009,6 +2265,10 @@ int notify_adapter_event(struct notifier_block *notifier,
 		chr_err("PD Notify APDO Ready\n");
 		pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK_APDO;
 		mutex_unlock(&pinfo->pd_lock);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo,
+				POWER_SUPPLY_USB_TYPE_PD_PPS);
+#endif
 		/* PE40 is ready */
 		_wake_up_charger(pinfo);
 		break;
@@ -2018,6 +2278,12 @@ int notify_adapter_event(struct notifier_block *notifier,
 		chr_err("PD Notify Type-C Ready\n");
 		pinfo->pd_type = MTK_PD_CONNECT_TYPEC_ONLY_SNK;
 		mutex_unlock(&pinfo->pd_lock);
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo,
+				(pinfo->rp_curr > 500 ?
+					POWER_SUPPLY_USB_TYPE_C :
+					POWER_SUPPLY_USB_TYPE_UNKNOWN));
+#endif
 		/* type C is ready */
 		_wake_up_charger(pinfo);
 		break;
@@ -2030,6 +2296,18 @@ int notify_adapter_event(struct notifier_block *notifier,
 			pinfo->notify_code &= ~CHG_TYPEC_WD_STATUS;
 		mtk_chgstat_notify(pinfo);
 		break;
+#ifdef CONFIG_LGE_PM
+	case MTK_TYPEC_RP_CURRENT:
+		chr_err("rp current = %d\n", *(int *)val);
+		pinfo->rp_curr = *(int *)val;
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+		chgctrl_set_typec_usb_type(pinfo,
+				(pinfo->rp_curr > 500 ?
+					POWER_SUPPLY_USB_TYPE_C :
+					POWER_SUPPLY_USB_TYPE_UNKNOWN));
+#endif
+		break;
+#endif
 	}
 	return NOTIFY_DONE;
 }
@@ -2099,16 +2377,6 @@ static int mtk_charger_probe(struct platform_device *pdev)
 	info->psy1 = power_supply_register(&pdev->dev, &info->psy_desc1,
 			&info->psy_cfg1);
 
-	info->chg_psy = devm_power_supply_get_by_phandle(&pdev->dev,
-		"charger");
-	if (IS_ERR_OR_NULL(info->chg_psy))
-		chr_err("%s: devm power fail to get chg_psy\n", __func__);
-
-	info->bat_psy = devm_power_supply_get_by_phandle(&pdev->dev,
-		"gauge");
-	if (IS_ERR_OR_NULL(info->bat_psy))
-		chr_err("%s: devm power fail to get bat_psy\n", __func__);
-
 	if (IS_ERR(info->psy1))
 		chr_err("register psy1 fail:%d\n",
 			PTR_ERR(info->psy1));
@@ -2133,7 +2401,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 
 	info->pd_adapter = get_adapter_by_name("pd_adapter");
 	if (!info->pd_adapter)
-		chr_err("%s: No pd adapter found\n",__func__);
+		chr_err("%s: No pd adapter found\n");
 	else {
 		info->pd_nb.notifier_call = notify_adapter_event;
 		register_adapter_device_notifier(info->pd_adapter,
@@ -2141,6 +2409,10 @@ static int mtk_charger_probe(struct platform_device *pdev)
 	}
 
 	info->chg_alg_nb.notifier_call = chg_alg_event;
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	chgctrl_update(info);
+#endif
 
 	kthread_run(charger_routine_thread, info, "charger_thread");
 

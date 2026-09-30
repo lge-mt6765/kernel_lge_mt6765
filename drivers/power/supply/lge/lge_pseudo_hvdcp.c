@@ -37,19 +37,32 @@ static struct pseudo_hvdcp_info pseudo_hvdcp = {
 	.threshold = 7000,
 };
 
-extern int pmic_get_vbus(void);
 static int pseudo_hvdcp_get_vbus(void)
 {
-	return pmic_get_vbus();
+	struct power_supply *psy;
+	union power_supply_propval val = {0, };
+	int ret;
+
+	psy = power_supply_get_by_name("mtk-master-charger");
+	if (!psy)
+		psy = power_supply_get_by_name("charger");
+	if (!psy)
+		psy = power_supply_get_by_name("usb");
+	if (!psy)
+		return 0;
+
+	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &val);
+	power_supply_put(psy);
+
+	if (ret < 0)
+		return 0;
+
+	return val.intval;
 }
 
 static void pseudo_hvdcp_notify(void)
 {
 	pseudo_power_supply_update("usb");
-
-#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
-	chgctrl_set_pseudo_mode(PSEUDO_HVDCP, pseudo_hvdcp.mode);
-#endif
 }
 
 static int param_set_pseudo_hvdcp(const char *val,

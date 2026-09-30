@@ -29,6 +29,23 @@
 #include "mtk_battery.h"
 #include "mtk_battery_table.h"
 
+#ifdef CONFIG_LGE_PM
+#include <soc/mediatek/lge/board_lge.h>
+#endif
+#ifdef CONFIG_LGE_PM_BATTERY_CYCLE
+#include <linux/power/battery_cycle.h>
+#endif
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+#include <linux/power/charger_controller.h>
+#endif
+
+#ifdef CONFIG_LGE_PM_PSEUDO_BATTERY
+#include <linux/power/lge_pseudo_batt.h>
+#endif
+
+#ifdef CONFIG_LGE_BOOT_MODE
+#include <soc/mediatek/lge/lge_boot_mode.h>
+#endif
 
 struct tag_bootmode {
 	u32 size;
@@ -150,10 +167,58 @@ bool is_algo_active(struct mtk_battery *gm)
 	return gm->algo.active;
 }
 
+#ifdef CONFIG_LGE_PM_BATTERY_ID
+int fgauge_get_profile_id(struct mtk_battery *gm)
+{
+	struct device_node *np, *battery_node;
+	const char *battery;
+	char *propname;
+	int i, idx;
+
+	if (!gm || !gm->gauge || !gm->gauge->pdev) {
+		bm_err("[%s] gauge not ready\n", __func__);
+		return 0;
+	}
+
+	np = gm->gauge->pdev->dev.of_node;
+	if (!np)
+		return 0;
+
+	battery_node = of_parse_phandle(np, "battery-id", 0);
+	if (!battery_node) {
+		bm_err("[%s] battery-id not found\n", __func__);
+		return 0;
+	}
+
+	battery = of_get_property(battery_node, "lge,battery-id", NULL);
+	if (!battery) {
+		bm_err("[%s] lge,battery-id not found\n", __func__);
+		return 0;
+	}
+
+	of_node_put(battery_node);
+
+	bm_err("[%s] battery-id=%s\n", __func__, battery);
+
+	for (i = 0; i < TOTAL_BATTERY_NUMBER; i++) {
+		propname = kasprintf(GFP_KERNEL, "profile-%d", i);
+		idx = of_property_match_string(np, propname, battery);
+		kfree(propname);
+		if (idx >= 0) {
+			bm_err("[%s] profile-id=%d, idx=%d\n", __func__,
+				i, idx);
+			return i;
+		}
+	}
+
+	return 0;
+}
+#else /* MediaTek */
 int fgauge_get_profile_id(void)
 {
 	return 0;
 }
+#endif
 
 int wakeup_fg_algo_cmd(
 	struct mtk_battery *gm, unsigned int flow_state, int cmd, int para1)
@@ -187,6 +252,11 @@ bool is_recovery_mode(void)
 	/* RECOVERY_BOOT */
 	if (gm->bootmode == 2)
 		return true;
+
+#ifdef CONFIG_LGE_PM
+	if (lge_get_laf_mode())
+		return true;
+#endif
 
 	return false;
 }
@@ -242,6 +312,31 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 };
 
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+static void chgctrl_hook(struct mtk_battery *gm,
+			 enum power_supply_property psp,
+			 union power_supply_propval *val)
+{
+	struct power_supply *psy;
+	struct chgctrl_helper *helper;
+
+	if (IS_ERR_OR_NULL(gm->chgctrl_psy)) {
+		gm->chgctrl_psy = devm_power_supply_get_by_phandle(
+				&gm->gauge->pdev->dev, "charger-controller");
+	}
+
+	if (IS_ERR_OR_NULL(gm->chgctrl_psy))
+		return;
+
+	psy = gm->chgctrl_psy;
+	helper = power_supply_get_drvdata(psy);
+	if (!helper || !helper->battery_hook)
+		return;
+
+	helper->battery_hook(helper, psp, val);
+}
+#endif
+
 static int battery_psy_get_property(struct power_supply *psy,
 	enum power_supply_property psp,
 	union power_supply_propval *val)
@@ -272,7 +367,11 @@ static int battery_psy_get_property(struct power_supply *psy,
 		val->intval = bs_data->bat_technology;
 		break;
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+#ifdef CONFIG_LGE_PM_BATTERY_CYCLE
+		val->intval = battery_cycle_get_count();
+#else /* MediaTek */
 		val->intval = 1;
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		/* 1 = META_BOOT, 4 = FACTORY_BOOT 5=ADVMETA_BOOT */
@@ -292,21 +391,44 @@ static int battery_psy_get_property(struct power_supply *psy,
 		val->intval =
 			gauge_get_int_property(GAUGE_PROP_BATTERY_CURRENT)
 			* 100;
+#ifdef CONFIG_LGE_PM
+		/* change sign for hidden menu. (-)charging, (+)discharging */
+		val->intval *= (-1);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
 		val->intval =
 			gauge_get_int_property(GAUGE_PROP_BATTERY_CURRENT)
 			* 100;
+#ifdef CONFIG_LGE_PM
+		/* change sign for hidden menu. (-)charging, (+)discharging */
+		val->intval *= (-1);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
+#ifdef CONFIG_LGE_PM
+		val->intval = gm->fg_table_cust_data.fg_profile[1].q_max
+			* 1000;
+#else /* MediaTek */
 		val->intval =
 			gm->fg_table_cust_data.fg_profile[
 				gm->battery_id].q_max * 1000;
+#endif
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+		/* show current charge_full if possible */
+		if (battery_aging_get_capacity())
+			val->intval = battery_aging_get_capacity();
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+#ifdef CONFIG_LGE_PM
+		val->intval = gm->fg_table_cust_data.fg_profile[1].q_max
+			* gm->ui_soc * 1000 / 100;
+#else /* MediaTek */
 		val->intval = gm->ui_soc *
 			gm->fg_table_cust_data.fg_profile[
 				gm->battery_id].q_max * 1000 / 100;
+#endif
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		gauge_get_property(GAUGE_PROP_BATTERY_VOLTAGE,
@@ -316,6 +438,10 @@ static int battery_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_TEMP:
 		force_get_tbat(gm, true);
 		val->intval = gm->tbat_precise;
+#ifdef CONFIG_LGE_PM
+		if (!gauge_get_int_property(GAUGE_PROP_BATTERY_EXIST))
+			val->intval = 200;
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
 		val->intval = check_cap_level(bs_data->bat_capacity);
@@ -327,8 +453,13 @@ static int battery_psy_get_property(struct power_supply *psy,
 			(ret == POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN))
 			val->intval = 0;
 		else {
+#ifdef CONFIG_LGE_PM
+			int q_max_now =
+				gm->fg_table_cust_data.fg_profile[1].q_max;
+#else /* MediaTek */
 			int q_max_now = gm->fg_table_cust_data.fg_profile[
 						gm->battery_id].q_max;
+#endif
 			int remain_ui = 100 - bs_data->bat_capacity;
 			int remain_mah = remain_ui * q_max_now / 10;
 			int current_now =
@@ -354,9 +485,13 @@ static int battery_psy_get_property(struct power_supply *psy,
 			int q_max_mah = 0;
 			int q_max_uah = 0;
 
+#ifdef CONFIG_LGE_PM
+			q_max_mah = gm->fg_table_cust_data.fg_profile[1].q_max;
+#else /* MediaTek */
 			q_max_mah =
 				gm->fg_table_cust_data.fg_profile[
 				gm->battery_id].q_max / 10;
+#endif
 
 			q_max_uah = q_max_mah * 1000;
 			if (q_max_uah <= 100000) {
@@ -367,7 +502,6 @@ static int battery_psy_get_property(struct power_supply *psy,
 			val->intval = q_max_uah;
 		}
 		break;
-
 	default:
 		ret = -EINVAL;
 		break;
@@ -375,6 +509,14 @@ static int battery_psy_get_property(struct power_supply *psy,
 
 	bm_debug("%s psp:%d ret:%d val:%d",
 		__func__, psp, ret, val->intval);
+
+#ifdef CONFIG_LGE_PM_CHARGER_CONTROLLER
+	chgctrl_hook(gm, psp, val);
+#endif
+
+#ifdef CONFIG_LGE_PM_PSEUDO_BATTERY
+	pseudo_batt_property_override(psp, val);
+#endif
 
 	return ret;
 }
@@ -392,13 +534,10 @@ static void mtk_battery_external_power_changed(struct power_supply *psy)
 
 	gm = psy->drv_data;
 	bs_data = &gm->bs_data;
-	chg_psy = bs_data->chg_psy;
-
+	chg_psy = devm_power_supply_get_by_phandle(&gm->gauge->pdev->dev,
+						       "charger");
 	if (IS_ERR_OR_NULL(chg_psy)) {
-		chg_psy = devm_power_supply_get_by_phandle(&gm->gauge->pdev->dev,
-							   "charger");
-		bm_err("%s retry to get chg_psy\n", __func__);
-		bs_data->chg_psy = chg_psy;
+		bm_err("%s Couldn't get chg_psy\n", __func__);
 	} else {
 		ret = power_supply_get_property(chg_psy,
 			POWER_SUPPLY_PROP_ONLINE, &online);
@@ -409,12 +548,16 @@ static void mtk_battery_external_power_changed(struct power_supply *psy)
 		if (!online.intval)
 			bs_data->bat_status = POWER_SUPPLY_STATUS_DISCHARGING;
 		else {
+#ifdef CONFIG_LGE_PM
+			bs_data->bat_status = status.intval;
+#else /* MediaTek */
 			if (status.intval == POWER_SUPPLY_STATUS_NOT_CHARGING)
 				bs_data->bat_status =
 					POWER_SUPPLY_STATUS_NOT_CHARGING;
 			else
 				bs_data->bat_status =
 					POWER_SUPPLY_STATUS_CHARGING;
+#endif
 			fg_sw_bat_cycle_accu(gm);
 		}
 
@@ -489,9 +632,17 @@ int BattThermistorConverTemp(struct mtk_battery *gm, int Res)
 
 	ptable = gm->tmp_table;
 	if (Res >= ptable[0].TemperatureR) {
+#ifdef CONFIG_LGE_PM
+		TBatt_Value = Fg_Temperature_Table[0].BatteryTemp * 10;
+#else /* MediaTek */
 		TBatt_Value = -400;
+#endif
 	} else if (Res <= ptable[20].TemperatureR) {
+#ifdef CONFIG_LGE_PM
+		TBatt_Value = Fg_Temperature_Table[20].BatteryTemp * 10;
+#else /* MediaTek */
 		TBatt_Value = 600;
+#endif
 	} else {
 		RES1 = ptable[0].TemperatureR;
 		TMP1 = ptable[0].BatteryTemp;
@@ -689,8 +840,12 @@ int force_get_tbat_internal(struct mtk_battery *gm, bool update)
 					pre_fg_current_temp,
 					pre_fg_r_value,
 					pre_bat_temperature_val2);
+#ifdef CONFIG_LGE_PM
+				/* No warning here */
+#else /* MediaTek */
 				/*pmic_auxadc_debug(1);*/
 				WARN_ON(1);
+#endif
 			}
 
 			pre_bat_temperature_volt_temp =
@@ -829,7 +984,11 @@ void fg_custom_init_from_header(struct mtk_battery *gm)
 	fg_cust_data = &gm->fg_cust_data;
 	fg_table_cust_data = &gm->fg_table_cust_data;
 
+#ifdef CONFIG_LGE_PM_BATTERY_ID
+	/* do not need to get profile id here */
+#else /* MediaTek */
 	fgauge_get_profile_id();
+#endif
 
 	fg_cust_data->versionID1 = FG_DAEMON_CMD_FROM_USER_NUMBER;
 	fg_cust_data->versionID2 = sizeof(gm->fg_cust_data);
@@ -956,6 +1115,7 @@ void fg_custom_init_from_header(struct mtk_battery *gm)
 	fg_cust_data->zcv_suspend_time = ZCV_SUSPEND_TIME;
 	fg_cust_data->sleep_current_avg = SLEEP_CURRENT_AVG;
 	fg_cust_data->zcv_car_gap_percentage = ZCV_CAR_GAP_PERCENTAGE;
+	fg_cust_data->min_uisoc_at_kpoc = MIN_UISOC_AT_KPOC;
 
 	/* dod_init */
 	fg_cust_data->hwocv_oldocv_diff = HWOCV_OLDOCV_DIFF;
@@ -1275,6 +1435,73 @@ static void fg_custom_parse_table(struct mtk_battery *gm,
 	}
 }
 
+/* struct fuelgauge_temperature Fg_Temperature_Table[21]; */
+static void fg_custom_part_ntc_table(const struct device_node *np,
+		struct fuelgauge_temperature *profile_struct)
+{
+	struct fuelgauge_temperature *p_fg_temp_table;
+	int bat_temp = 0, temperature_r = 0;
+	int saddles = 0, idx = 0, ret = 0, ret_a = 0;
+	struct mtk_battery *gm;
+
+#if 0
+	int i;
+#endif
+	gm = get_mtk_battery();
+	p_fg_temp_table = profile_struct;
+
+#if 0 /* dump */
+	bm_err("[before]Fg_Temperature_Table - bat_temp : temperature_r\n");
+	for (i = 0; i < 21; i++) {
+		bm_err("%d : %d %d\n", i, Fg_Temperature_Table[i].BatteryTemp,
+			Fg_Temperature_Table[i].TemperatureR);
+	}
+#endif
+
+	ret = fg_read_dts_val(np, "RBAT_TYPE", &(gm->rbat.type), 1);
+	ret_a = fg_read_dts_val(np, "RBAT_PULL_UP_R",
+			&(gm->rbat.rbat_pull_up_r), 1);
+	if ((ret == -1) || (ret_a == -1)) {
+		bm_err("Fail to get ntc type from dts.Keep default value\t");
+		bm_err("RBAT_TYPE=%d, RBAT_PULL_UP_R=%d\n",
+			gm->rbat.type, gm->rbat.rbat_pull_up_r);
+		return;
+	}
+	bm_err("From DTS. RBAT_TYPE = %d, RBAT_PULL_UP_R=%d\n",
+		gm->rbat.type, gm->rbat.rbat_pull_up_r);
+
+	fg_read_dts_val(np, "rbat_temperature_table_num", &saddles, 1);
+	bm_err("%s : rbat_temperature_table_num(%d)\n", __func__, saddles);
+
+	idx = 0;
+
+	while (1) {
+		ret = of_property_read_u32_index(np, "rbat_battery_temperature",
+							idx, &bat_temp);
+
+		idx++;
+		if (!of_property_read_u32_index(
+			np, "rbat_battery_temperature", idx, &temperature_r))
+			bm_debug("bat_temp = %d, temperature_r=%d\n",
+					bat_temp, temperature_r);
+
+		p_fg_temp_table->BatteryTemp = bat_temp;
+		p_fg_temp_table->TemperatureR = temperature_r;
+
+		p_fg_temp_table++;
+		if ((idx++) >= (saddles * 2))
+			break;
+	}
+
+#if 0 /* dump */
+	bm_err("[after]Fg_Temperature_Table - bat_temp : temperature_r\n");
+	for (i = 0; i < saddles; i++) {
+		bm_err("%d : %d %d\n", i, Fg_Temperature_Table[i].BatteryTemp,
+			Fg_Temperature_Table[i].TemperatureR);
+	}
+#endif
+}
+
 void fg_custom_init_from_dts(struct platform_device *dev,
 	struct mtk_battery *gm)
 {
@@ -1285,7 +1512,11 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 	struct fuel_gauge_custom_data *fg_cust_data;
 	struct fuel_gauge_table_custom_data *fg_table_cust_data;
 
+#ifdef CONFIG_LGE_PM_BATTERY_ID
+	gm->battery_id = fgauge_get_profile_id(gm);
+#else /* MediaTek */
 	gm->battery_id = fgauge_get_profile_id();
+#endif
 	bat_id = gm->battery_id;
 	fg_cust_data = &gm->fg_cust_data;
 	fg_table_cust_data = &gm->fg_table_cust_data;
@@ -1349,6 +1580,8 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 	if (ret == -1)
 		fg_cust_data->com_r_fg_value = fg_cust_data->r_fg_value;
 
+	fg_custom_part_ntc_table(np, Fg_Temperature_Table);
+
 	fg_read_dts_val(np, "FULL_TRACKING_BAT_INT2_MULTIPLY",
 		&(fg_cust_data->full_tracking_bat_int2_multiply), 1);
 	fg_read_dts_val(np, "enable_tmp_intr_suspend",
@@ -1362,6 +1595,10 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 		&(fg_cust_data->aging1_load_soc), UNIT_TRANS_100);
 	fg_read_dts_val(np, "AGING_TEMP_DIFF",
 		&(fg_cust_data->aging_temp_diff), 1);
+	fg_read_dts_val(np, "AGING_TEMP_LOW_LIMIT",
+		&(fg_cust_data->aging_temp_low_limit), 1);
+	fg_read_dts_val(np, "AGING_TEMP_HIGH_LIMIT",
+		&(fg_cust_data->aging_temp_high_limit), 1);
 	fg_read_dts_val(np, "AGING_100_EN", &(fg_cust_data->aging_100_en), 1);
 	fg_read_dts_val(np, "DIFFERENCE_VOLTAGE_UPDATE",
 		&(fg_cust_data->difference_voltage_update), 1);
@@ -1456,6 +1693,14 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 		&(fg_cust_data->shutdown_gauge1_vbat_en), 1);
 	fg_read_dts_val(np, "SHUTDOWN_GAUGE1_VBAT",
 		&(fg_cust_data->shutdown_gauge1_vbat), 1);
+	fg_read_dts_val(np, "POWER_ON_CAR_CHR",
+		&(fg_cust_data->power_on_car_chr), 1);
+	fg_read_dts_val(np, "POWER_ON_CAR_NOCHR",
+		&(fg_cust_data->power_on_car_nochr), 1);
+	fg_read_dts_val(np, "SHUTDOWN_CAR_RATIO",
+		&(fg_cust_data->shutdown_car_ratio), 1);
+	fg_read_dts_val(np, "MIN_UISOC_AT_KPOC",
+		&(fg_cust_data->min_uisoc_at_kpoc), 1);
 
 	/* ZCV update */
 	fg_read_dts_val(np, "ZCV_SUSPEND_TIME",
@@ -1484,6 +1729,35 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 		&(fg_cust_data->vbat_oldocv_diff), 1);
 	fg_read_dts_val(np, "SWOCV_OLDOCV_DIFF_EMB",
 		&(fg_cust_data->swocv_oldocv_diff_emb), 1);
+	fg_read_dts_val(np, "VIR_OLDOCV_DIFF_EMB",
+		&(fg_cust_data->vir_oldocv_diff_emb), 1);
+	fg_read_dts_val(np, "VIR_OLDOCV_DIFF_EMB_LT",
+		&(fg_cust_data->vir_oldocv_diff_emb_lt), 1);
+	fg_read_dts_val(np, "VIR_OLDOCV_DIFF_EMB_TMP",
+		&(fg_cust_data->vir_oldocv_diff_emb_tmp), 1);
+
+#ifdef CONFIG_LGE_PM
+	fg_read_dts_val(np, "keep_rtc_ui_soc", &(gm->keep_rtc_ui_soc), 1);
+#endif
+
+#ifdef CONFIG_LGE_BOOT_MODE
+	/* need to update D0 immediate when voltage changes at factory power test */
+	if (lge_get_boot_mode() == LGE_BOOT_MODE_QEM_130K) {
+		bm_err("%s LGE_BOOT_MODE_QEM_130K, oldocv diff set 0 \n", __func__);
+		fg_cust_data->hwocv_oldocv_diff = 0;
+		fg_cust_data->hwocv_oldocv_diff_chr = 0;
+		fg_cust_data->hwocv_swocv_diff = 0;
+		fg_cust_data->hwocv_swocv_diff_lt = 0;
+		fg_cust_data->hwocv_swocv_diff_lt_temp = 0;
+		fg_cust_data->swocv_oldocv_diff = 0;
+		fg_cust_data->swocv_oldocv_diff_chr = 0;
+		fg_cust_data->vbat_oldocv_diff = 0;
+		fg_cust_data->swocv_oldocv_diff_emb = 0;
+		fg_cust_data->vir_oldocv_diff_emb = 0;
+		fg_cust_data->vir_oldocv_diff_emb_lt = 0;
+		fg_cust_data->vir_oldocv_diff_emb_tmp = 0;
+	}
+#endif
 
 	fg_read_dts_val(np, "PMIC_SHUTDOWN_TIME",
 		&(fg_cust_data->pmic_shutdown_time), UNIT_TRANS_60);
@@ -1504,6 +1778,8 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 	fg_read_dts_val(np, "PSEUDO1_SEL", &(fg_cust_data->pseudo1_sel), 1);
 
 	fg_read_dts_val(np, "D0_SEL", &(fg_cust_data->d0_sel), 1);
+	fg_read_dts_val(np, "DLPT_UI_REMAP_EN",
+		&(fg_cust_data->dlpt_ui_remap_en), 1);
 	fg_read_dts_val(np, "AGING_SEL", &(fg_cust_data->aging_sel), 1);
 	fg_read_dts_val(np, "BAT_PAR_I", &(fg_cust_data->bat_par_i), 1);
 	fg_read_dts_val(np, "RECORD_LOG", &(fg_cust_data->record_log), 1);
@@ -1599,15 +1875,15 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 		np, "DISABLE_MTKBATTERY");
 	fg_read_dts_val(np, "MULTI_TEMP_GAUGE0",
 		&(fg_cust_data->multi_temp_gauge0), 1);
-	fg_read_dts_val(np, "FGC_FGV_TH1",
+	fg_read_dts_val(np, "DIFFERENCE_FGC_FGV_TH1",
 		&(fg_cust_data->difference_fgc_fgv_th1), 1);
-	fg_read_dts_val(np, "FGC_FGV_TH2",
+	fg_read_dts_val(np, "DIFFERENCE_FGC_FGV_TH2",
 		&(fg_cust_data->difference_fgc_fgv_th2), 1);
-	fg_read_dts_val(np, "FGC_FGV_TH3",
+	fg_read_dts_val(np, "DIFFERENCE_FGC_FGV_TH3",
 		&(fg_cust_data->difference_fgc_fgv_th3), 1);
-	fg_read_dts_val(np, "UISOC_UPDATE_T",
+	fg_read_dts_val(np, "UISOC_UPDATE_TYPE",
 		&(fg_cust_data->uisoc_update_type), 1);
-	fg_read_dts_val(np, "UIFULLLIMIT_EN",
+	fg_read_dts_val(np, "UI_FULL_LIMIT_EN",
 		&(fg_cust_data->ui_full_limit_en), 1);
 	fg_read_dts_val(np, "MTK_CHR_EXIST", &(fg_cust_data->mtk_chr_exist), 1);
 
@@ -1631,7 +1907,6 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 		fg_table_cust_data->active_table_number);
 
 	/* battery temperature  related*/
-	fg_read_dts_val(np, "RBAT_PULL_UP_R", &(gm->rbat.rbat_pull_up_r), 1);
 	fg_read_dts_val(np, "RBAT_PULL_UP_VOLT",
 		&(gm->rbat.rbat_pull_up_volt), 1);
 
@@ -1784,6 +2059,21 @@ void fg_custom_init_from_dts(struct platform_device *dev,
 
 #endif	/* end of CONFIG_OF */
 
+#ifdef CONFIG_LGE_PM
+void fg_custom_dump(struct mtk_battery *gm)
+{
+	struct fuel_gauge_table_custom_data *fg_table_cust_data;
+	int i;
+
+	fg_table_cust_data = &gm->fg_table_cust_data;
+
+	for (i = 0; i < fg_table_cust_data->active_table_number; i++) {
+		bm_err("[%s] T%d: %4d Q_MAX: %4d\n", __func__, i,
+			fg_table_cust_data->fg_profile[i].temperature,
+			fg_table_cust_data->fg_profile[i].q_max);
+	}
+}
+#endif
 /* ============================================================ */
 /* power supply battery */
 /* ============================================================ */
@@ -1872,6 +2162,15 @@ int fg_coulomb_int_h_handler(struct gauge_consumer *consumer)
 		fg_coulomb, gm->coulomb_int_ht,
 		gm->coulomb_int_lt, gm->coulomb_int_gap);
 
+#ifdef CONFIG_LGE_PM
+	if (fg_coulomb < -100000) {
+		bm_err("coulomb over threshold, disable_gauge !!!\n");
+		gm->disableGM30 = true;
+		if (fg_interrupt_check(gm) == false)
+			return 0;
+	}
+#endif
+
 	wakeup_fg_algo(gm, FG_INTR_BAT_INT1_HT);
 
 	return 0;
@@ -1927,6 +2226,16 @@ int fg_bat_int2_l_handler(struct gauge_consumer *consumer)
 	bm_debug("[%s] car:%d ht:%d\n",
 		__func__,
 		fg_coulomb, gm->uisoc_int_lt_gap);
+
+#ifdef CONFIG_LGE_PM
+	if (fg_coulomb < -100000) {
+		bm_err("coulomb over threshold, disable_gauge !!!\n");
+		gm->disableGM30 = true;
+		if (fg_interrupt_check(gm) == false)
+			return 0;
+	}
+#endif
+
 	fg_sw_bat_cycle_accu(gm);
 	wakeup_fg_algo(gm, FG_INTR_BAT_INT2_LT);
 	return 0;
@@ -2094,6 +2403,9 @@ static int uisoc_set(struct mtk_battery *gm,
 		gm->bs_data.bat_capacity = gm->ui_soc;
 		battery_update(gm);
 	}
+#ifdef CONFIG_LGE_PM
+	gm->ui_soc_valid = true;
+#endif
 	return 0;
 }
 
@@ -2164,6 +2476,77 @@ static int reset_set(struct mtk_battery *gm,
 	return 0;
 }
 
+#ifdef CONFIG_LGE_PM
+static int uisoc_valid_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = gm->ui_soc_valid ? 1 : 0;
+
+	return 0;
+}
+
+static int rawsoc_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = gm->soc;
+
+	return 0;
+}
+
+static int ttfsoc_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	/* fg_cust_data.ui_old_soc contains daemon_ui_soc */
+	*val = (gm->fg_cust_data.ui_old_soc + 5) / 10;
+
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+static int age_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = battery_aging_get_factor();
+
+	return 0;
+}
+
+static int age_level_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = battery_aging_get_factor_ten_multiple();
+
+	return 0;
+}
+
+static int age_condition_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = battery_aging_get_factor_level();
+
+	return 0;
+}
+
+static int age_condition_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int val)
+{
+	battery_aging_set_factor_level(val);
+
+	if (!IS_ERR_OR_NULL(gm->bs_data.psy))
+		power_supply_changed(gm->bs_data.psy);
+
+	return 0;
+}
+#endif
+
 static ssize_t bat_sysfs_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -2222,6 +2605,16 @@ static struct mtk_battery_sysfs_field_info battery_sysfs_field_tbl[] = {
 	BAT_SYSFS_FIELD_RW(init_done, BAT_PROP_INIT_DONE),
 	BAT_SYSFS_FIELD_WO(reset, BAT_PROP_FG_RESET),
 	BAT_SYSFS_FIELD_RW(log_level, BAT_PROP_LOG_LEVEL),
+#ifdef CONFIG_LGE_PM
+	BAT_SYSFS_FIELD_RO(uisoc_valid, BAT_PROP_UISOC_VALID),
+	BAT_SYSFS_FIELD_RO(rawsoc, BAT_PROP_RAWSOC),
+	BAT_SYSFS_FIELD_RO(ttfsoc, BAT_PROP_TTFSOC),
+#endif
+#ifdef CONFIG_LGE_PM_BATTERY_AGING_FACTOR
+	BAT_SYSFS_FIELD_RO(age, BAT_PROP_AGE), /* For LDB */
+	BAT_SYSFS_FIELD_RO(age_level, BAT_PROP_AGE_LEVEL), /* For LGU+ */
+	BAT_SYSFS_FIELD_RW(age_condition, BAT_PROP_AGE_CONDITION), /* For LG setting + Softbank */
+#endif
 };
 
 int battery_get_property(enum battery_property bp,
@@ -2332,6 +2725,16 @@ void fg_nafg_monitor(struct mtk_battery *gm)
 				FG_INTR_KERNEL_CMD,
 				FG_KERNEL_CMD_DISABLE_NAFG,
 				true);
+#ifdef CONFIG_LGE_PM
+			bm_err("[fg_nafg_monitor]before restart fuelgauge pid:%d\n",
+				gm->fgd_pid);
+
+			gm->old_pid = gm->fgd_pid;
+			kill_pid(find_vpid(gm->fgd_pid), SIGKILL, 1);
+			gm->force_restart_daemon++;
+			bm_err("[fg_nafg_monitor]after restart fuelgauged,%d\n",
+				gm->force_restart_daemon);
+#endif
 		}
 	}
 	bm_debug("[%s]time:%d nafg_cnt:%d, now:%d, last_t:%d\n",
@@ -2593,6 +2996,9 @@ int set_shutdown_cond(struct mtk_battery *gm, int shutdown_cond)
 	struct shutdown_controller *sdc;
 	struct shutdown_condition *sds;
 	int enable_lbat_shutdown;
+	struct fuel_gauge_custom_data *pdata;
+
+	pdata = &gm->fg_cust_data;
 
 #ifdef SHUTDOWN_CONDITION_LOW_BAT_VOLT
 	enable_lbat_shutdown = 1;
@@ -2629,8 +3035,13 @@ int set_shutdown_cond(struct mtk_battery *gm, int shutdown_cond)
 		mutex_lock(&sdc->lock);
 		sdc->shutdown_status.is_overheat = true;
 		mutex_unlock(&sdc->lock);
+#ifdef CONFIG_LGE_PM
+		/* do not power-off here */
+		bm_err("[%s]OVERHEAT !\n", __func__);
+#else /* MediaTek */
 		bm_debug("[%s]OVERHEAT shutdown!\n", __func__);
 		kernel_power_off();
+#endif
 		break;
 	case SOC_ZERO_PERCENT:
 		if (sdc->shutdown_status.is_soc_zero_percent != true) {
@@ -2677,11 +3088,11 @@ int set_shutdown_cond(struct mtk_battery *gm, int shutdown_cond)
 				sds->is_under_shutdown_voltage = true;
 				for (i = 0; i < AVGVBAT_ARRAY_SIZE; i++)
 					sdc->batdata[i] =
-						VBAT2_DET_VOLTAGE1 / 10;
+						pdata->vbat2_det_voltage1 / 10;
 				sdc->batidx = 0;
 			}
 			bm_debug("LOW_BAT_VOLT:vbat %d %d",
-				vbat, VBAT2_DET_VOLTAGE1 / 10);
+				vbat, pdata->vbat2_det_voltage1 / 10);
 			mutex_unlock(&sdc->lock);
 		}
 		break;
@@ -2733,7 +3144,7 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 
 	get_monotonic_boottime(&now);
 
-	bm_debug("%s:soc_zero:%d,ui 1percent:%d,dlpt_shut:%d,under_shutdown_volt:%d\n",
+	bm_err("%s:soc_zero:%d,ui 1percent:%d,dlpt_shut:%d,under_shutdown_volt:%d\n",
 		__func__,
 		sdd->shutdown_status.is_soc_zero_percent,
 		sdd->shutdown_status.is_uisoc_one_percent,
@@ -2746,8 +3157,13 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 				now, sdd->pre_time[SOC_ZERO_PERCENT]);
 			polling++;
 			if (duraction.tv_sec >= SHUTDOWN_TIME) {
+#ifdef CONFIG_LGE_PM
+				/* do not power-off here */
+				bm_debug("soc zero \n");
+#else /* MediaTek */
 				bm_debug("soc zero shutdown\n");
 				kernel_power_off();
+#endif
 				return next_waketime(polling);
 			}
 		} else if (current_soc > 0) {
@@ -2767,8 +3183,13 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 				timespec_sub(
 				now, sdd->pre_time[UISOC_ONE_PERCENT]);
 			if (duraction.tv_sec >= SHUTDOWN_TIME) {
+#ifdef CONFIG_LGE_PM
+				/* do not power-off here */
+				bm_debug("uisoc one percent\n");
+#else /* MediaTek */
 				bm_debug("uisoc one percent shutdown\n");
 				kernel_power_off();
+#endif
 				return next_waketime(polling);
 			}
 		} else if (now_current > 0 && current_soc > 0) {
@@ -2804,7 +3225,7 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 		sdd->avgvbat = vbatcnt / AVGVBAT_ARRAY_SIZE;
 		tmp = force_get_tbat(gm, true);
 
-		bm_debug("lbatcheck vbat:%d avgvbat:%d %d,%d tmp:%d,bound:%d,th:%d %d,en:%d\n",
+		bm_err("lbatcheck vbat:%d avgvbat:%d %d,%d tmp:%d,bound:%d,th:%d %d,en:%d\n",
 			vbat,
 			sdd->avgvbat,
 			sdd->vbat_lt,
@@ -2815,7 +3236,11 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 			LOW_TMP_BAT_VOLTAGE_LOW_BOUND,
 			LOW_TEMP_DISABLE_LOW_BAT_SHUTDOWN);
 
+#ifdef CONFIG_LGE_PM
+		if (sdd->avgvbat < (gm->fg_cust_data.shutdown_gauge0_voltage / 10)) {
+#else /* MTK original */
 		if (sdd->avgvbat < BAT_VOLTAGE_LOW_BOUND) {
+#endif
 			/* avg vbat less than 3.4v */
 			sdd->lowbatteryshutdown = true;
 			polling++;
@@ -2854,9 +3279,14 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 				duraction = timespec_sub(
 					now, sdd->pre_time[LOW_BAT_VOLT]);
 				if (duraction.tv_sec >= SHUTDOWN_TIME) {
+#ifdef CONFIG_LGE_PM
+					/* do not power-off here */
+					bm_debug("low bat , over %d second\n", SHUTDOWN_TIME);
+#else /* MediaTek */
 					bm_debug("low bat shutdown, over %d second\n",
 						SHUTDOWN_TIME);
 					kernel_power_off();
+#endif
 					return next_waketime(polling);
 				}
 			}
@@ -2870,7 +3300,7 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 		}
 
 		polling++;
-			bm_debug("[%s][UT] V %d ui_soc %d dur %d [%d:%d:%d:%d] batdata[%d] %d\n",
+			bm_err("[%s][UT] V %d ui_soc %d dur %d [%d:%d:%d:%d] batdata[%d] %d\n",
 				__func__,
 			sdd->avgvbat, current_ui_soc,
 			(int)duraction.tv_sec,
@@ -2884,7 +3314,7 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 			sdd->batidx = 0;
 	}
 
-	bm_debug(
+	bm_err(
 		"%s %d avgvbat:%d sec:%d lowst:%d\n",
 		__func__,
 		polling, sdd->avgvbat,
@@ -2941,9 +3371,14 @@ static int power_misc_routine_thread(void *arg)
 		}
 		if (sdd->overheat == true) {
 			sdd->overheat = false;
+#ifdef CONFIG_LGE_PM
+			/* do not power-off here */
+			bm_debug("%s battery overheat~ \n", __func__);
+#else /* MediaTek */
 			bm_debug("%s battery overheat~ power off\n",
 				__func__);
 			kernel_power_off();
+#endif
 			return 1;
 		}
 	}
@@ -3005,12 +3440,8 @@ int battery_psy_init(struct platform_device *pdev)
 	gauge = dev_get_drvdata(&pdev->dev);
 	gauge->gm = gm;
 	gm->gauge = gauge;
+	gm->log_level = BMLOG_ERROR_LEVEL;
 	mutex_init(&gm->ops_lock);
-
-	gm->bs_data.chg_psy = devm_power_supply_get_by_phandle(&pdev->dev,
-							 "charger");
-	if (IS_ERR_OR_NULL(gm->bs_data.chg_psy))
-		bm_err("[BAT_probe] %s: fail to get chg_psy !!\n", __func__);
 
 	battery_service_data_init(gm);
 	gm->bs_data.psy =
@@ -3122,6 +3553,10 @@ int battery_init(struct platform_device *pdev)
 	fg_check_lk_swocv(&pdev->dev, gm);
 	fg_custom_init_from_header(gm);
 	fg_custom_init_from_dts(pdev, gm);
+
+#ifdef CONFIG_LGE_PM
+	fg_custom_dump(gm);
+#endif
 
 	gauge_coulomb_service_init(gm);
 	gm->coulomb_plus.callback = fg_coulomb_int_h_handler;

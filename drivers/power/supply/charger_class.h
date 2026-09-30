@@ -37,6 +37,9 @@ enum {
 	CHARGER_DEV_NOTIFY_EOC,
 	CHARGER_DEV_NOTIFY_RECHG,
 	CHARGER_DEV_NOTIFY_SAFETY_TIMEOUT,
+#ifdef CONFIG_LGE_PM
+	CHARGER_DEV_NOTIFY_MIVR,
+#endif
 };
 
 struct charger_device {
@@ -156,6 +159,11 @@ struct charger_ops {
 	int (*enable_force_typec_otp)(struct charger_device *dev, bool en);
 	int (*enable_hidden_mode)(struct charger_device *dev, bool en);
 	int (*get_ctd_dischg_status)(struct charger_device *dev, u8 *status);
+
+#ifdef CONFIG_LGE_PM
+	int (*enable_ship_mode)(struct charger_device *dev, bool en);
+	int (*is_ship_mode_enabled)(struct charger_device *dev, bool *en);
+#endif
 };
 
 static inline void *charger_dev_get_drvdata(
@@ -253,6 +261,12 @@ extern int charger_dev_reset_eoc_state(
 	struct charger_device *charger_dev);
 extern int charger_dev_safety_check(
 	struct charger_device *charger_dev, u32 polling_ieoc);
+#ifdef CONFIG_LGE_PM
+extern int charger_dev_enable_ship_mode(
+	struct charger_device *charger_dev, bool en);
+extern int charger_dev_is_ship_mode_enabled(
+	struct charger_device *charger_dev, bool *en);
+#endif
 
 /* PE+/PE+2.0 */
 extern int charger_dev_send_ta_current_pattern(

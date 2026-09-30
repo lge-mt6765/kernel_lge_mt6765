@@ -51,7 +51,7 @@ static const char * const power_supply_type_text[] = {
 
 static const char * const power_supply_usb_type_text[] = {
 	"Unknown", "SDP", "DCP", "CDP", "ACA", "C",
-	"PD", "PD_DRP", "PD_PPS", "BrickID"
+	"PD", "PD_DRP", "PD_PPS", "BrickID",
 };
 
 static const char * const power_supply_status_text[] = {
@@ -507,9 +507,7 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(parallel_output_mode),
 	POWER_SUPPLY_ATTR(alignment),
 	POWER_SUPPLY_ATTR(moisture_detection_enabled),
-	POWER_SUPPLY_ATTR(cc_toggle_enable),
 	POWER_SUPPLY_ATTR(fg_type),
-	POWER_SUPPLY_ATTR(charger_status),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	POWER_SUPPLY_ATTR(charge_charger_state),
