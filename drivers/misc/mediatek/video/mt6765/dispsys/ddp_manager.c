@@ -29,7 +29,14 @@
 #include "ged.h"
 #endif
 
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+static atomic_t ddp_manager_init = ATOMIC_INIT(0);
+//static struct DDP_MANAGER_CONTEXT context;
+static int is_context_inited = 0;
+static struct DDP_MANAGER_CONTEXT context;
+#else
 static int ddp_manager_init;
+#endif
 #define DDP_MAX_MANAGER_HANDLE (DISP_MUTEX_DDP_COUNT+DISP_MUTEX_DDP_FIRST)
 
 struct DPMGR_WQ_HANDLE {
@@ -192,6 +199,14 @@ static char *path_event_name(enum DISP_PATH_EVENT event)
 
 static struct DDP_MANAGER_CONTEXT *_get_context(void)
 {
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+	if (is_context_inited) {
+		return &context;
+	} else {
+		DISP_LOG_E("the context is not initialized yet\n");
+		return NULL;
+	}
+#else
 	static int is_context_inited;
 	static struct DDP_MANAGER_CONTEXT context;
 
@@ -202,6 +217,7 @@ static struct DDP_MANAGER_CONTEXT *_get_context(void)
 		mutex_init(&context.mutex_lock);
 		is_context_inited = 1;
 	}
+#endif
 	return &context;
 }
 
@@ -350,7 +366,7 @@ static int acquire_mutex(enum DDP_SCENARIO_ENUM scenario)
 
 	struct DDP_MANAGER_CONTEXT *ctx = _get_context();
 
-	ASSERT(scenario < DDP_SCENARIO_MAX);
+	ASSERT(scenario >= 0 && scenario < DDP_SCENARIO_MAX);
 	mutex_idx_free = ctx->mutex_idx;
 	while (mutex_idx_free) {
 		if (mutex_idx_free & 0x1) {
@@ -766,7 +782,7 @@ int dpmgr_path_set_dst_module(disp_path_handle dp_handle,
 	}
 
 	handle = (struct ddp_path_handle *)dp_handle;
-	if (handle->scenario >= DDP_SCENARIO_MAX) {
+	if (!(handle->scenario >= 0 && handle->scenario < DDP_SCENARIO_MAX)) {
 		ASSERT(0);
 		return -1;
 	}
@@ -800,7 +816,7 @@ enum DISP_MODULE_ENUM dpmgr_path_get_dst_module(disp_path_handle dp_handle)
 	}
 	handle = (struct ddp_path_handle *)dp_handle;
 
-	if (handle->scenario >= DDP_SCENARIO_MAX) {
+	if (!(handle->scenario >= 0 && handle->scenario < DDP_SCENARIO_MAX)) {
 		ASSERT(0);
 		return -1;
 	}
@@ -1225,7 +1241,7 @@ struct disp_ddp_path_config *dpmgr_path_get_last_config(
 
 	if (!dp_handle) {
 		ASSERT(0);
-		return NULL;
+		return -1;
 	}
 
 	handle->last_config.ovl_dirty = 0;
@@ -1414,6 +1430,58 @@ int dpmgr_path_power_on(disp_path_handle dp_handle, enum CMDQ_SWITCH encmdq)
 	mutex_unlock(&c->mutex_lock);
 	return 0;
 }
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int dpmgr_path_pwm_power_on(disp_path_handle dp_handle, enum CMDQ_SWITCH encmdq)
+{
+	struct DDP_MANAGER_CONTEXT *context = _get_context();
+	struct ddp_path_handle* handle;
+	struct DDP_MODULE_DRIVER *module = NULL;
+
+	ASSERT(dp_handle != NULL);
+	handle = (struct ddp_path_handle*) dp_handle;
+
+	mutex_lock(&context->mutex_lock);
+	path_top_clock_on();
+	module = ddp_get_module_driver(DISP_MODULE_PWM0);
+	if(module)
+		module->power_on(DISP_MODULE_PWM0, encmdq ? handle->cmdqhandle : NULL);
+	else{
+		mutex_unlock(&context->mutex_lock);
+		return -1;
+	}
+
+	handle->power_state = 1;
+	mutex_unlock(&context->mutex_lock);
+
+	return 0;
+}
+
+int dpmgr_path_pwm_power_off(disp_path_handle dp_handle, enum CMDQ_SWITCH encmdq)
+{
+        struct DDP_MANAGER_CONTEXT *context = _get_context();
+        struct ddp_path_handle *handle;
+	struct DDP_MODULE_DRIVER *module = NULL;
+
+        ASSERT(dp_handle != NULL);
+        handle = (struct ddp_path_handle*) dp_handle;
+
+        mutex_lock(&context->mutex_lock);
+        module = ddp_get_module_driver(DISP_MODULE_PWM0);
+	if(module)
+		module->power_off(DISP_MODULE_PWM0, encmdq ? handle->cmdqhandle : NULL);
+	else{
+		mutex_unlock(&context->mutex_lock);
+		return -1;
+	}
+
+        handle->power_state = 0;
+        path_top_clock_off();
+        mutex_unlock(&context->mutex_lock);
+
+        return 0;
+}
+#endif
 
 int dpmgr_path_power_off_bypass_pwm(disp_path_handle dp_handle,
 	enum CMDQ_SWITCH encmdq)
@@ -2016,10 +2084,20 @@ static void dpmgr_irq_handler(enum DISP_MODULE_ENUM module,
 int dpmgr_init(void)
 {
 	DISP_LOG_I("ddp manager init\n");
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+	if (atomic_xchg(&ddp_manager_init, 1))
+		return 0;
+
+	memset((void*)&context, 0, sizeof(struct DDP_MANAGER_CONTEXT));
+	mutex_init(&context.mutex_lock);
+	context.mutex_idx = (1 << DISP_MUTEX_DDP_COUNT) - 1;
+	is_context_inited = 1;
+#else
 	if (ddp_manager_init)
 		return 0;
 
 	ddp_manager_init = 1;
+#endif
 	ddp_debug_init();
 	disp_init_irq();
 	disp_register_irq_callback(dpmgr_irq_handler);

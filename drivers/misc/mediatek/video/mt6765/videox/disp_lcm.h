@@ -79,4 +79,12 @@ void disp_lcm_dynfps_send_cmd(struct disp_lcm_handle *plcm, void *cmdq_handle,
 	unsigned int from_fps, unsigned int to_fps);
 
 /*-----------------------DynFPS end-----------------------------------*/
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int disp_lcm_init_power(struct disp_lcm_handle *plcm, int force);
+int disp_lcm_shutdown(struct disp_lcm_handle *plcm);
+int disp_lcm_set_deep_sleep(struct disp_lcm_handle *plcm, unsigned int mode);
+int disp_lcm_check_chargerlogo_mode(void);
+#endif
+
 #endif

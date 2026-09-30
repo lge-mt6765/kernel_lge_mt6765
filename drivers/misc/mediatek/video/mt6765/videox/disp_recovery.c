@@ -38,6 +38,9 @@
 #include "ddp_manager.h"
 #include "disp_lcm.h"
 #include "ddp_clkmgr.h"
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+#include "mtkfb.h"
+#endif
 #ifdef CONFIG_MTK_SMI_EXT
 #include "mmdvfs_mgr.h"
 #endif
@@ -95,6 +98,17 @@ static wait_queue_head_t esd_ext_te_1_wq;
 static atomic_t esd_ext_te_1_event = ATOMIC_INIT(0);
 static unsigned int extd_esd_check_mode;
 static unsigned int extd_esd_check_enable;
+#endif
+
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+static bool esd_recovery_enable = false;
+static bool disp_esd_check_lcm = false;
+static unsigned int disp_check_delay = 50;
+static DEFINE_MUTEX(disp_esd_lock);
+unsigned int primary_display_esd_checking = false;
+
+#define ENABLE	1
+#define DISABLE 0
 #endif
 
 unsigned int get_esd_check_mode(void)
@@ -637,7 +651,11 @@ static int primary_display_check_recovery_worker_kthread(void *data)
 			DISPERR(
 				"[ESD]esd check fail, will do esd recovery. try=%d\n",
 				i);
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+			LG_ESD_recovery();
+#else
 			primary_display_esd_recovery();
+#endif
 			recovery_done = 1;
 		} while (++i < esd_try_cnt);
 
@@ -646,6 +664,11 @@ static int primary_display_check_recovery_worker_kthread(void *data)
 				"[ESD]LCM recover fail. Try time:%d. Disable esd check\n",
 				esd_try_cnt);
 			primary_display_esd_check_enable(0);
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+			LG_ESD_recovery();
+#else
+			primary_display_esd_recovery();
+#endif
 		} else if (recovery_done == 1) {
 			DISPCHECK("[ESD]esd recovery success\n");
 			recovery_done = 0;
@@ -660,6 +683,196 @@ static int primary_display_check_recovery_worker_kthread(void *data)
 	}
 	return 0;
 }
+
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+/* LGE_DISPLAY_ESD_RECOVERY */
+int primary_display_esd_recovery_suspend(void)
+{
+	enum DISP_STATUS ret = DISP_STATUS_OK;
+	struct LCM_PARAMS *lcm_param = NULL;
+	mmp_event mmp_r = ddp_mmp_get_events()->esd_recovery_t;
+
+	DISPFUNC();
+
+	dprec_logger_start(DPREC_LOGGER_ESD_RECOVERY, 0, 0);
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_START, 0, 0);
+	DISPCHECK("[ESD]ESD recovery begin\n");
+
+	primary_display_manual_lock();
+
+	lcm_param = disp_lcm_get_params(primary_get_lcm());
+	if (primary_get_state() == DISP_SLEPT) {
+		DISPCHECK("[ESD]Primary DISP is slept, skip esd recovery\n");
+		goto done;
+	}
+
+	primary_display_idlemgr_kick((char *)__func__, 0);
+
+	if(lcm_param != NULL){
+		if(lcm_param->lcm_seq_suspend == LCM_MIPI_VIDEO_FRAME_SEND_SUSPEND)
+			disp_lcm_suspend(primary_get_lcm());
+
+		if(lcm_param->esd_powerctrl_support == true && lcm_param->lcm_seq_shutdown == LCM_SHUTDOWN_BEFORE_DSI_OFF)
+			disp_lcm_shutdown(primary_get_lcm());
+	} else
+		DISPERR("[POWER] lcm_param is null!! \n");
+
+	DISPCHECK("[POWER]lcm suspend before of dpmgr path stop[end]\n");
+
+	/* In video mode, recovery don't need kick and blocking flush */
+	if (!primary_display_is_video_mode()) {
+		primary_display_idlemgr_kick((char *)__func__, 0);
+		mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 1);
+
+		/* blocking flush before stop trigger loop */
+		_blocking_flush();
+	}
+
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 2);
+
+	DISPINFO("[ESD]display cmdq trigger loop stop[begin]\n");
+	_cmdq_stop_trigger_loop();
+	DISPINFO("[ESD]display cmdq trigger loop stop[end]\n");
+
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 3);
+
+	DISPDBG("[ESD]stop dpmgr path[begin]\n");
+	dpmgr_path_stop(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+	DISPCHECK("[ESD]stop dpmgr path[end]\n");
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 0xff);
+
+	if (dpmgr_path_is_busy(primary_get_dpmgr_handle())) {
+		DISPCHECK("[ESD]primary display path is busy after stop\n");
+		dpmgr_wait_event_timeout(primary_get_dpmgr_handle(),
+			DISP_PATH_EVENT_FRAME_DONE, HZ * 1);
+		DISPCHECK("[ESD]wait frame done ret:%d\n", ret);
+	}
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 4);
+
+	if(lcm_param != NULL){
+		if(lcm_param->lcm_seq_suspend == LCM_MIPI_VIDEO_FRAME_DONE_SUSPEND)
+			disp_lcm_suspend(primary_get_lcm());
+
+		if(lcm_param->esd_powerctrl_support == true && lcm_param->lcm_seq_shutdown == LCM_SHUTDOWN_AFTER_DSI_OFF)
+			disp_lcm_shutdown(primary_get_lcm());
+	} else
+		DISPERR("[POWER]lcm_param is null!! \n");
+
+	DISPCHECK("[POWER]lcm suspend after of dpmgr path stop[end]\n");
+
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 5);
+done:
+	primary_set_state(DISP_SLEPT);
+	primary_display_manual_unlock();
+	DISPMSG("[ESD]ESD suspend end\n");
+	return ret;
+}
+
+
+int primary_display_esd_recovery_resume(void)
+{
+	enum DISP_STATUS ret = DISP_STATUS_OK;
+	struct LCM_PARAMS *lcm_param = disp_lcm_get_params(primary_get_lcm());
+	mmp_event mmp_r = ddp_mmp_get_events()->esd_recovery_t;
+
+	DISPFUNC();
+
+	primary_display_manual_lock();
+
+	disp_lcm_init_power(primary_get_lcm(),1);
+
+	DISPDBG("[ESD]reset display path[begin]\n");
+	dpmgr_path_reset(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+	DISPCHECK("[ESD]reset display path[end]\n");
+
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 6);
+
+	DISPDBG("[ESD]dsi power reset[begine]\n");
+	dpmgr_path_dsi_power_off(primary_get_dpmgr_handle(), NULL);
+	dpmgr_path_dsi_power_on(primary_get_dpmgr_handle(), NULL);
+	if (!primary_display_is_video_mode())
+		dpmgr_path_ioctl(primary_get_dpmgr_handle(), NULL,
+				DDP_DSI_ENABLE_TE, NULL);
+	DISPCHECK("[ESD]dsi power reset[end]\n");
+
+
+	DISPDBG("[ESD]lcm esd recovery resume before of dpmgr path start[begin]\n");
+	if(lcm_param != NULL){
+		if(lcm_param->esd_powerctrl_support == true && lcm_param->lcm_seq_resume == LCM_MIPI_READY_VIDEO_FRAME_RESUME){
+			disp_lcm_init(primary_get_lcm(), 1);
+		}
+
+		if(lcm_param->esd_powerctrl_support == false && lcm_param->lcm_seq_resume == LCM_MIPI_READY_VIDEO_FRAME_RESUME){
+			disp_lcm_resume(primary_get_lcm());
+		}
+	} else
+		DISPERR("[ESD]lcm_param is null!! \n");
+	DISPCHECK("[ESD]lcm esd recovery resume before of dpmgr path start[end]\n");
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 7);
+
+	DISPDBG("[ESD]start dpmgr path[begin]\n");
+	if (disp_partial_is_support()) {
+		struct disp_ddp_path_config *data_config =
+			dpmgr_path_get_last_config(primary_get_dpmgr_handle());
+
+		primary_display_config_full_roi(data_config,
+			primary_get_dpmgr_handle(), NULL);
+	}
+	dpmgr_path_start(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+	DISPCHECK("[ESD]start dpmgr path[end]\n");
+
+	if (dpmgr_path_is_busy(primary_get_dpmgr_handle())) {
+		DISPERR("[ESD]Main display busy before triggering SOF\n");
+		ret = -1;
+		/* goto done; */
+	}
+
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 8);
+	DISPDBG("[ESD]start cmdq trigger loop[begin]\n");
+	_cmdq_start_trigger_loop();
+	DISPCHECK("[ESD]start cmdq trigger loop[end]\n");
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 9);
+	if (primary_display_is_video_mode()) {
+		/*
+		 * for video mode, we need to force trigger here
+		 * for cmd mode, just set DPREC_EVENT_CMDQ_SET_EVENT_ALLOW
+		 * when trigger loop start
+		 */
+		dpmgr_path_trigger(primary_get_dpmgr_handle(), NULL,
+			CMDQ_DISABLE);
+
+	}
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_PULSE, 0, 10);
+
+	DISPDBG("[ESD]lcm esd recovery resume before of dpmgr path start[begin]\n");
+	if(lcm_param != NULL){
+		if(lcm_param->lcm_seq_resume == LCM_MIPI_VIDEO_FRAME_SEND_RESUME)
+			disp_lcm_resume(primary_get_lcm());
+	} else
+		DISPERR("[ESD]lcm_param is null!! \n");
+	DISPCHECK("[ESD]lcm esd recovery resume before of dpmgr path start[end]\n");
+
+	/*
+	 * (in suspend) when we stop trigger loop
+	 * if no other thread is running, cmdq may disable its clock
+	 * all cmdq event will be cleared after suspend
+	 */
+	cmdqCoreSetEvent(CMDQ_EVENT_DISP_WDMA0_EOF);
+
+	/* set dirty to trigger one frame -- cmd mode */
+	if (!primary_display_is_video_mode()) {
+		cmdqCoreSetEvent(CMDQ_SYNC_TOKEN_CONFIG_DIRTY);
+		mdelay(40);
+	}
+
+	primary_set_state(DISP_ALIVE);
+	primary_display_manual_unlock();
+	DISPMSG("[ESD]ESD recovery end\n");
+	mmprofile_log_ex(mmp_r, MMPROFILE_FLAG_END, 0, 0);
+	dprec_logger_done(DPREC_LOGGER_ESD_RECOVERY, 0, 0);
+	return ret;
+}
+#endif
 
 /* ESD RECOVERY */
 int primary_display_esd_recovery(void)
@@ -853,6 +1066,34 @@ void primary_display_check_recovery_init(void)
 	}
 }
 
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+int get_esd_check_enable(void)
+{
+  return esd_check_enable;
+}
+
+void set_esd_check_enable(int enable)
+{
+  esd_check_enable = ((enable)? ENABLE : DISABLE);
+
+  DISPERR("ESD Polling Thread %s\n",(enable)? "Enable":"Disable");
+}
+
+void primary_display_esd_check_enable(int enable)
+{
+  if (_need_do_esd_check()) {
+    set_esd_check_enable(enable);
+    atomic_set(&_check_task_wakeup, enable);
+
+    if (enable)
+      wake_up_interruptible(&_check_task_wq);
+
+    DISPERR("[ESD] %s esd check\n",(enable)? "enable":"disable");
+  } else {
+    DISPERR("[ESD]do not support esd check\n");
+  }
+}
+#else
 void primary_display_esd_check_enable(int enable)
 {
 	if (_need_do_esd_check()) {
@@ -870,6 +1111,7 @@ void primary_display_esd_check_enable(int enable)
 		DISPCHECK("[ESD]do not support esd check\n");
 	}
 }
+#endif
 
 unsigned int need_wait_esd_eof(void)
 {
@@ -891,6 +1133,95 @@ unsigned int need_wait_esd_eof(void)
 
 	return ret;
 }
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int get_disp_check_delay(void)
+{
+	return disp_check_delay;
+}
+
+void set_disp_check_delay(unsigned int delay)
+{
+	disp_check_delay = delay;
+}
+
+bool get_disp_esd_check_lcm(void)
+{
+	return disp_esd_check_lcm;
+}
+
+void set_disp_esd_check_lcm(bool enable)
+{
+	disp_esd_check_lcm = (enable)? true:false;
+}
+
+bool get_esd_recovery_state(void)
+{
+	return esd_recovery_enable;
+}
+
+void set_esd_recovery_state(unsigned int enable)
+{
+	esd_recovery_enable = (enable)? true:false;
+	primary_display_esd_checking = enable;
+}
+
+int disp_esd_check(void)
+{
+	unsigned int ret = 0;
+
+	if(get_display_state() == DISP_RECOVERY_SKIP || !get_disp_esd_check_lcm()) {
+		set_display_state(DISP_STATUS_OK);
+		goto done;
+	}
+
+	msleep(get_disp_check_delay());
+
+	ret = primary_display_esd_check();
+
+	DISPERR("ddic %s state and LCD %s \n",(ret)? "Abnormal":"Normal",get_ap_lcd_state()? "ON":"OFF");
+
+done:
+	return ret;
+}
+
+void LG_ESD_recovery(void)
+{
+	unsigned int ret = DISABLE;
+
+	if(primary_get_state() == DISP_SLEPT) {
+		DISPERR("already sleep state : skip %s\n",__func__);
+		return;
+	}
+
+	mutex_lock(&disp_esd_lock);
+
+retry:
+	set_esd_recovery_state(ENABLE);
+
+	mtkfb_blank_esd_recovery();
+
+	set_esd_recovery_state(DISABLE);
+
+	if(disp_esd_check()&&!ret) {
+		DISPERR("retry esd recovery\n");
+		ret = ENABLE;
+		goto retry;
+	}
+
+	mutex_unlock(&disp_esd_lock);
+
+	DISPERR("%s end\n", __func__);
+}
+
+int primary_display_esd_report_touchintpin_keep_low(void)
+{
+  DISPMSG("%s : D-IC is in abnormal status", __func__);
+  LG_ESD_recovery();
+
+  return 0;
+}
+#endif
 
 #if defined(CONFIG_MTK_DUAL_DISPLAY_SUPPORT) && \
 	(CONFIG_MTK_DUAL_DISPLAY_SUPPORT == 2)

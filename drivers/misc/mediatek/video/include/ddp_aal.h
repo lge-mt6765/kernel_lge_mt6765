@@ -150,9 +150,34 @@ struct DISP_AAL_PARAM {
 	aal_u32_handle_t dre30_gain;
 };
 
+#ifdef CONFIG_LGE_USE_ESS_STRENGTH_TABLE
+// set value by backlight table map
+enum DISP_UI_BAR {
+  UI_10_PER = 13,
+  UI_20_PER = 36,
+  UI_30_PER = 77,
+  UI_40_PER = 140,
+  UI_60_PER = 320,
+  UI_80_PER = 599,
+  UI_90_PER = 793,
+  UI_MAX    = 1005,
+};
+
+// set value by ess strength table
+enum DISP_ESS_STR_INDEX {
+  MIN_ESS_STR_INDEX       = 0, // 0
+  UI_10_PER_ESS_STR_INDEX = 1, // 16
+  UI_20_PER_ESS_STR_INDEX = 2, // 32
+  UI_30_PER_ESS_STR_INDEX = 4, // 64
+  UI_40_PER_ESS_STR_INDEX = 6, // 96
+  UI_60_PER_ESS_STR_INDEX = 8, // 128 (default ess strength)
+  UI_80_PER_ESS_STR_INDEX = 10,// 160
+  MAX_ESS_STR_INDEX       = 12 // 192
+};
+#endif
+
 void disp_aal_on_end_of_frame(void);
 void disp_aal_on_end_of_frame_by_module(enum disp_aal_id_t id);
-void disp_aal_on_start_of_frame(enum disp_aal_id_t id);
 
 extern int aal_dbg_en;
 void aal_test(const char *cmd, char *debug_output);
@@ -166,5 +191,8 @@ void disp_aal_set_lcm_type(unsigned int panel_type);
 void disp_aal_set_ess_level(int level);
 void disp_aal_set_ess_en(int enable);
 void disp_aal_set_dre_en(int enable);
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int disp_aal_get_ess_en(void);
+#endif
 
 #endif

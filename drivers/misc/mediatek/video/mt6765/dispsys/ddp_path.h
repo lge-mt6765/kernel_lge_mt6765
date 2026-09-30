@@ -7,7 +7,7 @@
 #define __DDP_PATH_H__
 
 #include "ddp_info.h"
-#include "cmdq_record.h"
+#include "../../cmdq/v3/cmdq_record.h"
 
 enum DDP_MODE {
 	DDP_VIDEO_MODE = 0,

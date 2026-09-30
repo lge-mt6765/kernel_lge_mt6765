@@ -87,11 +87,6 @@ enum LCM_IOCTL {
 	LCM_IOCTL_NULL = 0,
 };
 
-enum LCM_Send_Cmd_Mode {
-	LCM_SEND_IN_CMD = 0,
-	LCM_SEND_IN_VDO
-};
-
 /* DBI related enumerations */
 
 enum LCM_DBI_CLOCK_FREQ {
@@ -198,10 +193,8 @@ enum LCM_LANE_NUM {
 
 enum LCM_DSI_FORMAT {
 	LCM_DSI_FORMAT_RGB565 = 0,
-	LCM_DSI_FORMAT_RGB666_LOOSELY = 1,
-	LCM_DSI_FORMAT_RGB666 = 2,
-	LCM_DSI_FORMAT_RGB888 = 3,
-	LCM_DSI_FORMAT_RGB101010 = 4,
+	LCM_DSI_FORMAT_RGB666 = 1,
+	LCM_DSI_FORMAT_RGB888 = 2
 };
 
 
@@ -288,6 +281,31 @@ enum LCM_DSI_PLL_CLOCK {
 	LCM_DSI_6589_PLL_CLOCK_520 = 50,
 };
 
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+enum LCM_SUSPEND_MODE {
+	LCM_MIPI_VIDEO_FRAME_SEND_SUSPEND,
+	LCM_MIPI_VIDEO_FRAME_DONE_SUSPEND,
+	LCM_SHUTDOWN_BEFORE_DSI_OFF,
+	LCM_SHUTDOWN_AFTER_DSI_OFF,
+	NOT_USE_SUSPEND,
+	NOT_USE_POWEROFF,
+};
+
+enum LCM_RESUME_MODE {
+	LCM_MIPI_READY_VIDEO_FRAME_RESUME,
+	LCM_MIPI_VIDEO_FRAME_SEND_RESUME,
+	LCM_POWER_ON_BEFORE_DSI_ON,
+	LCM_POWER_ON_AFTER_DSI_ON,
+	NOT_USE_RESUME,
+	NOT_USE_POWERON,
+};
+
+enum LCM_POWER_OFF_SCENARIO {
+	MFTS_POWER_DOWN,
+	DEVICE_POWER_DOWN,
+	NORMAL_SUSPEND,
+};
+#endif
 /* ------------------------------------------------------------------------- */
 
 struct LCM_DBI_DATA_FORMAT {
@@ -361,42 +379,6 @@ struct LCM_UFOE_CONFIG_PARAMS {
 };
 /* ------------------------------------------------------------------------- */
 
-#ifdef CONFIG_MTK_MT6382_BDG
-struct LCM_DSC_CONFIG_PARAMS {
-	unsigned int ver; /* [7:4] major [3:0] minor */
-	unsigned int slice_width;
-	unsigned int bit_per_pixel;
-	unsigned int slice_mode;
-	unsigned int rgb_swap;
-	unsigned int dsc_cfg;
-	unsigned int dsc_line_buf_depth;
-	unsigned int bit_per_channel;
-	unsigned int rct_on;
-	unsigned int bp_enable;
-	unsigned int pic_height; /* need to check */
-	unsigned int pic_width;  /* need to check */
-	unsigned int slice_height;
-	unsigned int chunk_size;
-	unsigned int dec_delay;
-	unsigned int xmit_delay;
-	unsigned int scale_value;
-	unsigned int increment_interval;
-	unsigned int line_bpg_offset;
-	unsigned int decrement_interval;
-	unsigned int nfl_bpg_offset;
-	unsigned int slice_bpg_offset;
-	unsigned int initial_offset;
-	unsigned int final_offset;
-	unsigned int flatness_minqp;
-	unsigned int flatness_maxqp;
-	unsigned int rc_model_size;
-	unsigned int rc_edge_factor;
-	unsigned int rc_quant_incr_limit0;
-	unsigned int rc_quant_incr_limit1;
-	unsigned int rc_tgt_offset_hi;
-	unsigned int rc_tgt_offset_lo;
-};
-#else
 struct LCM_DSC_CONFIG_PARAMS {
 	unsigned int slice_width;
 	unsigned int slice_hight;
@@ -425,7 +407,6 @@ struct LCM_DSC_CONFIG_PARAMS {
 	unsigned int flatness_maxqp;
 	unsigned int rc_mode1_size;
 };
-#endif
 
 
 struct LCM_DBI_PARAMS {
@@ -551,21 +532,15 @@ struct dynamic_fps_info {
 	/*unsigned int idle_check_interval;*//*ms*/
 };
 
-struct vsync_trigger_time {
-	unsigned int fps;
-	unsigned int trigger_after_te;
-	unsigned int config_expense_time;
-};
 
 /*DynFPS*/
 enum DynFPS_LEVEL {
 	DFPS_LEVEL0 = 0,
 	DFPS_LEVEL1,
-	DFPS_LEVEL2,
 	DFPS_LEVELNUM,
 };
 
-#define DFPS_LEVELS 3
+#define DFPS_LEVELS 2
 enum FPS_CHANGE_INDEX {
 	DYNFPS_NOT_DEFINED = 0,
 	DYNFPS_DSI_VFP = 1,
@@ -690,7 +665,6 @@ struct LCM_DSI_PARAMS {
 	/* PLL_CLOCK = (int) PLL_CLOCK */
 	unsigned int PLL_CLOCK;
 	/* data_rate = PLL_CLOCK x 2 */
-	unsigned int ap_data_rate;
 	unsigned int data_rate;
 	unsigned int PLL_CK_VDO;
 	unsigned int PLL_CK_CMD;
@@ -701,8 +675,6 @@ struct LCM_DSI_PARAMS {
 	unsigned int cont_clock;
 	unsigned int ufoe_enable;
 	unsigned int dsc_enable;
-	unsigned int bdg_dsc_enable;
-	unsigned int bdg_ssc_disable;
 	struct LCM_UFOE_CONFIG_PARAMS ufoe_params;
 	struct LCM_DSC_CONFIG_PARAMS dsc_params;
 	unsigned int edp_panel;
@@ -764,9 +736,8 @@ struct LCM_DSI_PARAMS {
 	/*for ARR*/
 	unsigned int dynamic_fps_levels;
 	struct dynamic_fps_info dynamic_fps_table[DYNAMIC_FPS_LEVELS];
-	struct vsync_trigger_time vsync_after_te[DFPS_LEVELS];
 
-#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+#if defined(CONFIG_MTK_HIGH_FRAME_RATE) || defined(CONFIG_LGE_MULTI_FRAME_RATE)
 	/****DynFPS start****/
 	unsigned int dfps_enable;
 	unsigned int dfps_default_fps;
@@ -822,12 +793,20 @@ struct LCM_PARAMS {
 	unsigned int average_luminance;
 	unsigned int max_luminance;
 
-#ifdef CONFIG_MTK_HIGH_FRAME_RATE
-	enum LCM_Send_Cmd_Mode sendmode;
-#endif
-
+#ifdef CONFIG_LGE_DISPLAY_COMMON
 	unsigned int hbm_en_time;
 	unsigned int hbm_dis_time;
+
+	unsigned int lcm_seq_suspend;
+	unsigned int lcm_seq_shutdown;
+	unsigned int lcm_seq_resume;
+	unsigned int lcm_seq_power_on;
+
+	bool esd_recovery_status;
+	bool esd_powerctrl_support;
+	bool gSetShutdown;
+	unsigned int lcm_bl_on_delay;
+#endif
 };
 
 
@@ -999,7 +978,7 @@ struct LCM_UTIL_FUNCS {
 	void (*dsi_dynfps_send_cmd)(
 		void *cmdq, unsigned int cmd,
 		unsigned char count, unsigned char *para_list,
-		unsigned char force_update, enum LCM_Send_Cmd_Mode sendmode);
+		unsigned char force_update);
 
 };
 enum LCM_DRV_IOCTL_CMD {
@@ -1019,6 +998,16 @@ struct LCM_DRIVER {
 	void (*init_power)(void);
 	void (*suspend_power)(void);
 	void (*resume_power)(void);
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	void (*resume_cmd)(void);
+	void (*esd_resume_cmd)(void);
+	void (*suspend_2nd_cmd)(void);
+	void (*shutdown)(void);
+	void (*resume_mfts)(void);
+	void (*suspend_mfts)(void);
+	int (*set_touch_osc)(int enable);
+#endif
 
 	void (*update)(unsigned int x, unsigned int y, unsigned int width,
 			unsigned int height);
@@ -1065,12 +1054,18 @@ struct LCM_DRIVER {
 	void (*set_pwm_for_mix)(int enable);
 
 	void (*aod)(int enter);
-
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	void (*set_deep_sleep)(unsigned int mode);
+#endif
+#ifdef CONFIG_LGE_INIT_CMD_TUNING
+	struct LCM_setting_table_V3* (*get_lcm_init_cmd_str)(void);
+	int (*get_init_cmd_str_size)(void);
+#endif
 	/* /////////////DynFPS///////////////////////////// */
 	void (*dfps_send_lcm_cmd)(void *cmdq_handle,
-		unsigned int from_level, unsigned int to_level, struct LCM_PARAMS *params);
+		unsigned int from_level, unsigned int to_level);
 	bool (*dfps_need_send_cmd)(
-	unsigned int from_level, unsigned int to_level, struct LCM_PARAMS *params);
+	unsigned int from_level, unsigned int to_level);
 };
 
 /* LCM Driver Functions */
@@ -1085,7 +1080,14 @@ extern enum LCM_DSI_MODE_CON lcm_dsi_mode;
 extern int display_bias_enable(void);
 extern int display_bias_disable(void);
 extern int display_bias_regulator_init(void);
-
-
+extern void lcm_reset_pin(unsigned int mode);
+//S - LGE FH10 model functions
+extern int lcm_power_disable(unsigned int delay);
+extern int lcm_power_enable(unsigned int value,unsigned int delay);
+//E - LGE FH10 model functions
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+extern int get_display_bias_dsv_voltage(void);
+extern void set_display_bias_dsv_voltage(int volt);
+#endif
 
 #endif /* __LCM_DRV_H__ */

@@ -12,10 +12,20 @@
 #include "disp_drv_platform.h"
 #include "ddp_manager.h"
 #include "disp_lcm.h"
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+#include <mt-plat/mtk_boot.h>
+#include <mt-plat/mtk_boot_common.h>
+#endif
 
 #if defined(MTK_LCM_DEVICE_TREE_SUPPORT)
 #include <linux/of.h>
 #endif
+
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+extern bool lge_get_mfts_mode(void);
+#endif
+
+extern unsigned int islcmconnected;
 
 /* This macro and arrya is designed for multiple LCM support */
 /* for multiple LCM, we should assign I/F Port id in lcm driver, */
@@ -1036,8 +1046,11 @@ struct disp_lcm_handle *disp_lcm_probe(char *plcm_name,
 	struct disp_lcm_handle *plcm = NULL;
 
 	DISPFUNC();
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	DISPERR("plcm_name=%s is_lcm_inited %d\n", plcm_name, is_lcm_inited);
+#else
 	DISPCHECK("plcm_name=%s is_lcm_inited %d\n", plcm_name, is_lcm_inited);
-
+#endif
 #if defined(MTK_LCM_DEVICE_TREE_SUPPORT)
 	if (check_lcm_node_from_DT() == 0) {
 		lcm_drv = &lcm_common_drv;
@@ -1145,6 +1158,15 @@ struct disp_lcm_handle *disp_lcm_probe(char *plcm_name,
 
 	plcm->drv->get_params(plcm->params);
 	plcm->lcm_if_id = plcm->params->lcm_if;
+
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+	if(islcmconnected == 0 || lge_get_mfts_mode() == 1){
+#else
+	if(islcmconnected == 0){
+#endif
+		plcm->params->dsi.esd_check_enable = 0;
+		DISPERR("Disable ESD polling check enable because LCM isn't connected\n");
+	}
 
 	/* below code is for lcm driver forward compatible */
 	if (plcm->params->type == LCM_TYPE_DSI
@@ -1312,7 +1334,32 @@ int disp_lcm_init(struct disp_lcm_handle *plcm, int force)
 	/* DSI_BIST_Pattern_Test(DISP_MODULE_DSI0,NULL,true, 0x00ffff00); */
 	return 0;
 }
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int disp_lcm_init_power(struct disp_lcm_handle * plcm, int force)
+{
+	struct LCM_DRIVER * lcm_drv = NULL;
+	DISPFUNC();
 
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("plcm is null\n");
+		return - 1;
+	}
+
+	lcm_drv = plcm->drv;
+
+	if (lcm_drv->init_power) {
+		if (!disp_lcm_is_inited(plcm) || force) {
+			DISPMSG("lcm init power()\n");
+			lcm_drv->init_power();
+		}
+	} else {
+		DISPERR("FATAL ERROR, lcm_drv->init is null\n");
+		return - 1;
+	}
+
+	return 0;
+}
+#endif
 struct LCM_PARAMS *disp_lcm_get_params(struct disp_lcm_handle *plcm)
 {
 	/* DISPFUNC(); */
@@ -1445,6 +1492,50 @@ int disp_lcm_resume(struct disp_lcm_handle *plcm)
 	DISPERR("lcm_drv is null\n");
 	return -1;
 }
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int disp_lcm_shutdown(struct disp_lcm_handle *plcm)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+
+	DISPFUNC();
+
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("plcm is null\n");
+		return -1;
+	}
+
+	if (_is_lcm_inited(plcm)) {
+		lcm_drv = plcm->drv;
+
+		if (lcm_drv->shutdown){
+			lcm_drv->shutdown();
+		} else {
+			DISPERR("FATAL ERROR, lcm_drv->shutdown is null\n");
+			return -1;
+		}
+
+	return 0;
+	}
+
+	DISPERR("lcm_drv is null\n");
+	return -1;
+}
+/* TODO : get_boot_mode was absent in kernel-4.19
+int disp_lcm_check_chargerlogo_mode(void)
+{
+	int ret = 0;
+	unsigned int boot_mode = 0;
+
+	boot_mode = get_boot_mode();
+
+	if (boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT || boot_mode == LOW_POWER_OFF_CHARGING_BOOT)
+		ret = 1;
+
+	return ret;
+}
+*/
+#endif
 
 int disp_lcm_aod(struct disp_lcm_handle *plcm, int enter)
 {
@@ -1715,7 +1806,7 @@ int disp_lcm_is_arr_support(struct disp_lcm_handle *plcm)
 }
 
 
-#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+#if defined(CONFIG_MTK_HIGH_FRAME_RATE) || defined(CONFIG_LGE_MULTI_FRAME_RATE)
 
 /*-------------------DynFPS start-----------------------------*/
 int disp_lcm_is_dynfps_support(struct disp_lcm_handle *plcm)
@@ -1730,10 +1821,9 @@ int disp_lcm_is_dynfps_support(struct disp_lcm_handle *plcm)
 	else
 		return 0;
 
-	if (lcm_param->type != LCM_TYPE_DSI ||
-		lcm_param->dsi.mode == CMD_MODE) {
+	/* ALPS05774751 */
+	if (lcm_param->type != LCM_TYPE_DSI)
 		return 0;
-	}
 
 	dfps_enable = lcm_param->dsi.dfps_enable;
 	dfps_num = lcm_param->dsi.dfps_num;
@@ -1830,7 +1920,7 @@ bool disp_lcm_need_send_cmd(
 	if (from_level < 0 ||
 		to_level < 0)
 		return false;
-	return	lcm_drv->dfps_need_send_cmd(from_level, to_level, lcm_param);
+	return	lcm_drv->dfps_need_send_cmd(from_level, to_level);
 }
 
 void disp_lcm_dynfps_send_cmd(
@@ -1868,10 +1958,37 @@ void disp_lcm_dynfps_send_cmd(
 			to_level = (dfps_params[j]).level;
 	}
 	lcm_drv->dfps_send_lcm_cmd(cmdq_handle,
-		from_level, to_level, lcm_param);
+		from_level, to_level);
 done:
 	DISPCHECK("%s,add done\n", __func__);
 }
 
 /*-------------------DynFPS end-----------------------------*/
+#endif
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int disp_lcm_set_deep_sleep(struct disp_lcm_handle *plcm, unsigned int mode)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+
+	DISPFUNC();
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("plcm is null\n");
+		return -1;
+	}
+
+	if (_is_lcm_inited(plcm)) {
+		lcm_drv = plcm->drv;
+
+			if (lcm_drv->set_deep_sleep){
+				lcm_drv->set_deep_sleep(mode);
+				return 0;
+			}
+			DISPERR("FATAL ERROR, lcm_drv->set_power_mode is null\n");
+			return -1;
+	}
+
+	DISPERR("lcm_drv is null\n");
+	return -1;
+}
 #endif

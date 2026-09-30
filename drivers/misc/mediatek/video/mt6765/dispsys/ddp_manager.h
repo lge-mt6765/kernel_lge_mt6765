@@ -10,7 +10,7 @@
 #include "ddp_info.h"
 #include "ddp_path.h"
 
-#include "cmdq_record.h"
+#include "../../cmdq/v3/cmdq_record.h"
 
 #define MAKE_DDP_IRQ_BIT(module, shift)	  ((module<<24)|(0x1<<shift))
 #define IRQBIT_MODULE(irqbit)             (irqbit >> 24)
@@ -342,6 +342,10 @@ int dpmgr_wait_event_ts(disp_path_handle dp_handle, enum DISP_PATH_EVENT event,
 int dpmgr_path_power_on(disp_path_handle dp_handle, enum CMDQ_SWITCH encmdq);
 int dpmgr_path_power_on_bypass_pwm(disp_path_handle dp_handle,
 	enum CMDQ_SWITCH encmdq);
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+int dpmgr_path_pwm_power_on(disp_path_handle dp_handle, enum CMDQ_SWITCH encmdq);
+int dpmgr_path_pwm_power_off(disp_path_handle dp_handle, enum CMDQ_SWITCH encmdq);
+#endif
 
 /* power 0ff,  turn off each modules clk, if all hande are closed.
  *top clock will be off.

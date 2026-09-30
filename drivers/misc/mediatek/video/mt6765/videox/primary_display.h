@@ -18,6 +18,9 @@
 #include "mt-plat/mtk_smi.h"
 #include "mtk_smi.h"
 
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+void primary_display_set_deep_sleep(unsigned int mode);
+#endif
 
 #ifdef MTK_FB_MMDVFS_SUPPORT
 extern struct mtk_pm_qos_request primary_display_qos_request;
@@ -112,6 +115,9 @@ enum DISP_STATUS {
 	DISP_STATUS_NOT_IMPLEMENTED,
 	DISP_STATUS_ALREADY_SET,
 	DISP_STATUS_ERROR,
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	DISP_RECOVERY_SKIP,
+#endif
 };
 
 #if 0
@@ -365,7 +371,9 @@ static inline char *power_mode_to_string(enum mtkfb_power_mode pm)
 }
 
 typedef int (*PRIMARY_DISPLAY_CALLBACK) (unsigned int user_data);
-
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+void primary_display_gctxt_init(void);
+#endif
 struct display_primary_path_context *_get_context(void);
 void _primary_path_lock(const char *caller);
 void _primary_path_unlock(const char *caller);
@@ -459,9 +467,7 @@ int primary_display_get_lcm_refresh_rate(void);
 int _display_set_lcm_refresh_rate(int fps);
 void primary_display_idlemgr_kick(const char *source, int need_lock);
 void primary_display_idlemgr_enter_idle(int need_lock);
-void primary_display_update_present_fence(struct cmdqRecStruct *cmdq_handle,
-	unsigned int fence_idx);
-void primary_display_wakeup_pf_thread(void);
+void primary_display_update_present_fence(unsigned int fence_idx);
 void primary_display_switch_esd_mode(int mode);
 int primary_display_cmdq_set_reg(unsigned int addr, unsigned int val);
 int primary_display_vsync_switch(int method);
@@ -490,6 +496,30 @@ enum mtkfb_power_mode primary_display_check_power_mode(void);
 void debug_print_power_mode_check(enum mtkfb_power_mode prev,
 	enum mtkfb_power_mode cur);
 bool primary_is_aod_supported(void);
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+bool primary_get_shutdown_status(void);
+void primary_set_shutdown_status(bool enable);
+int primary_get_shutdown_scenario(void);
+bool primary_get_chargerlogo_mode(void) ;
+bool primary_get_boot_mode(void);
+enum DISP_POWER_STATE primary_set_state(enum DISP_POWER_STATE new_state);
+void primary_display_pwm_power_on(void);
+void primary_display_pwm_power_off(void);
+unsigned int primary_display_get_pwm_on_delay(void);
+#endif
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+enum mtkfb_power_mode primary_display_set_power_mode_nolock(enum mtkfb_power_mode new_mode);
+enum mtkfb_power_mode primary_display_get_power_mode_nolock(void);
+enum mtkfb_power_mode primary_display_check_power_mode_nolock(void);
+void debug_print_power_mode_check_nolock(enum mtkfb_power_mode prev, enum mtkfb_power_mode cur);
+#endif
+
+#ifdef CONFIG_TUNING_MIPI_CLOCK
+struct LCM_PARAMS* primary_display_get_lcm_params(void);
+void primary_display_set_lcm_params(unsigned int);
+#endif
 
 /* legancy */
 struct LCM_PARAMS *DISP_GetLcmPara(void);
@@ -535,6 +565,9 @@ int primary_display_config_full_roi(struct disp_ddp_path_config *pconfig,
 		struct cmdqRecStruct *cmdq_handle);
 int primary_display_set_scenario(int scenario);
 enum DISP_MODULE_ENUM _get_dst_module_by_lcm(struct disp_lcm_handle *plcm);
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+void set_cam_max_bw(int bw);
+#endif
 extern void check_mm0_clk_sts(void);
 int primary_display_is_directlink_mode(void);
 #ifdef MTK_FB_MMDVFS_SUPPORT

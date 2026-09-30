@@ -61,6 +61,23 @@
 #include "ddp_log.h"
 #include "ddp_m4u.h"
 #include "extd_multi_control.h"
+
+#ifdef CONFIG_LGE_VSYNC_SKIP
+#include "mtkfb_vsync_skip.h"
+#endif
+
+#ifdef CONFIG_LGE_INTERVAL_MONITOR
+#include "lge_fbcn.h"
+#include "lge_interval_monitor.h"
+#endif
+
+#ifdef CONFIG_LGE_USE_TOUCH_NOTIFIER
+#include <linux/input/lge_touch_notify.h>
+#endif
+
+#ifdef CONFIG_LGE_USE_DISPLAY_NOTIFIER
+#include <linux/lge_panel_notify.h>
+#endif
 #include "external_display.h"
 
 #include <mt-plat/mtk_ccci_common.h>
@@ -68,6 +85,31 @@
 
 #ifdef CONFIG_MTK_SMI_EXT
 #include "smi_public.h"
+#endif
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+enum {
+	LCD_MODE_U0 = 0,
+	LCD_MODE_U2_UNBLANK,
+	LCD_MODE_U2,
+	LCD_MODE_U3,
+	LCD_MODE_U3_PARTIAL,
+	LCD_MODE_U3_QUICKCOVER,
+	LCD_MODE_STOP,
+};
+#endif
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+unsigned int gSetShutdown = 0;
+static unsigned int display_state = 0;
+static unsigned int ap_lcd_state = LCD_MODE_U3;
+static bool esd_recovery_fb_blank = false;
+
+enum {
+	FB_UNBLANK_ESD = FB_BLANK_POWERDOWN + 1,
+	FB_BLANK_ESD,
+	FB_RETURN
+};
 #endif
 
 /* static variable */
@@ -172,6 +214,9 @@ DEFINE_SEMAPHORE(sem_flipping);
 DEFINE_SEMAPHORE(sem_early_suspend);
 DEFINE_SEMAPHORE(sem_overlay_buffer);
 
+#ifdef CONFIG_LGE_LCD_OFF_DIMMING
+bool fb_blank_called = false;
+#endif
 /* ------------------------------------------------------------------------- */
 /* local function declarations */
 /* ------------------------------------------------------------------------- */
@@ -186,6 +231,19 @@ static int _parse_tag_videolfb(void);
 static void mtkfb_late_resume(void);
 static void mtkfb_early_suspend(void);
 
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+void mtkfb_esd_recovery(void)
+{
+	if (primary_get_shutdown_status() != true && primary_get_state() != DISP_SLEPT)
+		LG_ESD_recovery();
+	else
+		DISPMSG("[%s] skip ESD recovery for power off\n", __func__);
+}
+#else
+void mtkfb_esd_recovery(void)
+{
+}
+#endif
 
 void mtkfb_log_enable(int enable)
 {
@@ -222,6 +280,130 @@ static int mtkfb_release(struct fb_info *info, int user)
 	MSG_FUNC_LEAVE();
 	return 0;
 }
+#if defined(CONFIG_LGE_USE_TOUCH_NOTIFIER)
+static void mtkfb_blank_pre_event_handler(int event)
+{
+  int pre_event = event;
+
+  switch (pre_event) {
+    case FB_BLANK_UNBLANK:
+    case FB_BLANK_NORMAL:
+      touch_notifier_call_chain(LCD_EVENT_LCD_UNBLANK, (void *)&pre_event);
+      break;
+case FB_BLANK_POWERDOWN:
+      touch_notifier_call_chain(LCD_EVENT_LCD_BLANK, (void *)&pre_event);
+      break;
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+    case FB_UNBLANK_ESD:
+    case FB_BLANK_ESD:
+      pre_event = (pre_event != FB_BLANK_ESD)? FB_BLANK_UNBLANK:FB_BLANK_POWERDOWN;
+      touch_notifier_call_chain(LCD_EVENT_LCD_BLANK, (void *)&pre_event);
+      break;
+#endif
+    default:
+      break;
+  }
+
+  DISPMSG("[FB Driver] notifier pre_event : %d\n",event);
+}
+#endif
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+#ifdef CONFIG_LGE_INTERVAL_MONITOR
+void set_lge_interval_monitor(int mode)
+{
+	int enable = 0;
+
+	if(get_esd_recovery_state())
+		mode -= FB_UNBLANK_ESD;
+
+	if(!mode)
+		enable = 1;
+
+	lge_interval_panel_power_notify(enable);
+}
+#endif
+
+bool get_esd_recovery_fb_blank(void)
+{
+	return esd_recovery_fb_blank;
+}
+
+void set_esd_recovery_fb_blank(bool enable)
+{
+	esd_recovery_fb_blank = enable;
+}
+
+int get_display_state(void)
+{
+	return display_state;
+}
+
+void set_display_state(unsigned int state)
+{
+	display_state = state;
+}
+
+int get_ap_lcd_state(void)
+{
+	return ap_lcd_state;
+}
+
+void set_ap_lcd_state(unsigned int state)
+{
+	ap_lcd_state = state;
+}
+
+int check_esd_recovery_state(unsigned int blank_mode)
+{
+	int esd_mode = blank_mode;
+
+	if(get_esd_recovery_state() && get_esd_recovery_fb_blank()) {
+		esd_mode = (esd_mode!=FB_BLANK_POWERDOWN)? FB_UNBLANK_ESD:FB_BLANK_ESD;
+		DISPMSG("%s : esd recovery operation (%d)\n", __func__, esd_mode);
+	}
+
+	return esd_mode;
+}
+
+void mtkfb_blank_recovery(unsigned int blank_mode)
+{
+	if(blank_mode != FB_BLANK_ESD)
+		primary_display_esd_recovery_resume();
+	else
+		primary_display_esd_recovery_suspend();
+
+	DISPMSG("%s : %s\n",__func__, (blank_mode!=FB_BLANK_ESD)? "resume":"suspend");
+}
+
+void mtkfb_blank_esd_recovery(void)
+{
+	struct fb_info *fb_info = mtkfb_fbi;
+
+	console_lock();
+
+	if(!get_ap_lcd_state()){
+		DISPERR("already sleep state, skip %s\n", __func__);
+		set_display_state(DISP_RECOVERY_SKIP);
+		goto done;
+	}
+
+	set_esd_recovery_fb_blank(true);
+
+	fb_info->flags |= FBINFO_MISC_USEREVENT;
+	fb_blank(fb_info, FB_BLANK_POWERDOWN);
+
+	fb_blank(fb_info, FB_BLANK_UNBLANK);
+	fb_info->flags &= ~FBINFO_MISC_USEREVENT;
+
+	set_esd_recovery_fb_blank(false);
+
+done:
+	console_unlock();
+
+	DISPMSG("%s end\n", __func__);
+}
+#endif
 
 #if defined(CONFIG_MTK_DUAL_DISPLAY_SUPPORT) && \
 	(CONFIG_MTK_DUAL_DISPLAY_SUPPORT == 2)
@@ -255,7 +437,26 @@ static int mtkfb1_blank(int blank_mode, struct fb_info *info)
 
 static int mtkfb_blank(int blank_mode, struct fb_info *info)
 {
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	static unsigned int prev_panel_mode = LCD_MODE_STOP;
+	static unsigned int cur_panel_mode = LCD_MODE_STOP;
+#endif
 	enum mtkfb_power_mode prev_pm = primary_display_get_power_mode();
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	blank_mode = check_esd_recovery_state(blank_mode);
+#endif
+
+#ifdef CONFIG_LGE_INTERVAL_MONITOR
+	if (FB_BLANK_UNBLANK == blank_mode)
+		lge_interval_panel_power_notify(1);
+	else
+		lge_interval_panel_power_notify(0);
+#endif
+
+#if defined(CONFIG_LGE_USE_TOUCH_NOTIFIER)
+	mtkfb_blank_pre_event_handler(blank_mode);
+#endif
 
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
@@ -269,7 +470,9 @@ static int mtkfb_blank(int blank_mode, struct fb_info *info)
 
 		primary_display_set_power_mode(FB_RESUME);
 		mtkfb_late_resume();
-
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+		cur_panel_mode = LCD_MODE_U3;
+#endif
 		debug_print_power_mode_check(prev_pm, FB_RESUME);
 		break;
 	case FB_BLANK_VSYNC_SUSPEND:
@@ -285,13 +488,37 @@ static int mtkfb_blank(int blank_mode, struct fb_info *info)
 
 		primary_display_set_power_mode(FB_SUSPEND);
 		mtkfb_early_suspend();
-
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+		cur_panel_mode = LCD_MODE_U0;
+#endif
 		debug_print_power_mode_check(prev_pm, FB_SUSPEND);
-
 		break;
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	case FB_UNBLANK_ESD:
+	case FB_BLANK_ESD:
+		mtkfb_blank_recovery(blank_mode);
+		cur_panel_mode = (blank_mode != FB_BLANK_ESD)? LCD_MODE_U3 : LCD_MODE_U0;
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	set_ap_lcd_state(cur_panel_mode);
+#endif
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	if (prev_panel_mode != cur_panel_mode) {
+#ifdef CONFIG_LGE_USE_TOUCH_NOTIFIER
+		touch_notifier_call_chain(LCD_EVENT_LCD_MODE, (void *)&cur_panel_mode);
+#endif
+#ifdef CONFIG_LGE_USE_DISPLAY_NOTIFIER
+		lge_panel_notifier_call_chain(LGE_PANEL_EVENT_BLANK, 0, (cur_panel_mode == LCD_MODE_U0) ? LGE_PANEL_STATE_BLANK : LGE_PANEL_STATE_UNBLANK);
+#endif
+		prev_panel_mode = cur_panel_mode;
+	}
+#endif
 
 	return 0;
 }
@@ -949,7 +1176,7 @@ unsigned int mtkfb_fm_auto_test(void)
 	}
 
 	if (idle_state_backup) {
-		primary_display_idlemgr_kick(__func__, 1);
+		primary_display_idlemgr_kick(__func__, 0);
 		disp_helper_set_option(DISP_OPT_IDLEMGR_ENTER_ULPS, 0);
 	}
 	fbVirAddr = (unsigned long)fbdev->fb_va_base;
@@ -983,7 +1210,7 @@ unsigned int mtkfb_fm_auto_test(void)
 
 	mtkfb_pan_display_impl(&mtkfb_fbi->var, mtkfb_fbi);
 	msleep(100);
-	primary_display_idlemgr_kick(__func__, 1);
+	primary_display_idlemgr_kick(__func__, 0);
 	result = primary_display_lcm_ATA();
 
 	if (idle_state_backup)
@@ -1002,7 +1229,7 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 	unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
-	int ret = 0;
+	enum DISP_STATUS ret = 0;
 	int r = 0;
 
 	DISPFUNC();
@@ -1062,7 +1289,7 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 
 		aod_pm = (enum mtkfb_aod_power_mode)arg;
 		DISPCHECK("AOD: ioctl: %s\n",
-			aod_pm != MTKFB_AOD_DOZE ? "AOD_DOZE_SUSPEND" : "AOD_DOZE");
+			aod_pm ? "AOD_DOZE_SUSPEND" : "AOD_DOZE");
 
 		if (!primary_is_aod_supported()) {
 			DISPCHECK("AOD: feature not support\n");
@@ -1098,8 +1325,7 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 		}
 		if (ret < 0)
 			DISPERR("AOD: set %s failed\n",
-				(aod_pm == MTKFB_AOD_DOZE_SUSPEND) ?
-					"AOD_SUSPEND" : "AOD_RESUME");
+				aod_pm ? "AOD_SUSPEND" : "AOD_RESUME");
 
 		break;
 	}
@@ -1387,16 +1613,6 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 		return 0;
 	case MTKFB_UNLOCK_FRONT_BUFFER:
 		return 0;
-
-	case MTKFB_FACTORY_AUTO_TEST:
-	{
-		unsigned int result = 0;
-
-		DISPMSG("factory mode: lcm auto test\n");
-		result = mtkfb_fm_auto_test();
-		return copy_to_user(argp, &result,
-			sizeof(result)) ? -EFAULT : 0;
-	}
 	case MTKFB_META_SHOW_BOOTLOGO:
 	{
 		int i, layer_num;
@@ -1713,20 +1929,6 @@ static int mtkfb_compat_ioctl(struct fb_info *info, unsigned int cmd,
 		}
 		break;
 	}
-	case COMPAT_MTKFB_FACTORY_AUTO_TEST:
-	{
-		unsigned long result = 0;
-		compat_ulong_t __user *data32;
-
-		DISPMSG("factory mode: lcm auto test\n");
-		result = mtkfb_fm_auto_test();
-		data32 = compat_ptr(arg);
-		if (put_user(result, data32)) {
-			pr_info("MTKFB_GET_POWERSTATE failed\n");
-			ret = -EFAULT;
-		}
-		break;
-	}
 	case COMPAT_MTKFB_META_SHOW_BOOTLOGO:
 	{
 		arg = (unsigned long)compat_ptr(arg);
@@ -1802,16 +2004,108 @@ static struct fb_ops mtkfb1_ops = {
  * ---------------------------------------------------------------------------
  */
 
+#define S_IRWUGO (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH)
+
+#ifdef CONFIG_LGE_VSYNC_SKIP
+static DEVICE_ATTR(vfps, S_IRWUGO, fps_show, fps_store);
+static DEVICE_ATTR(vfps_fcnt, S_IRWUGO, fps_fcnt_show, NULL);
+static DEVICE_ATTR(vfps_ratio, S_IRWUGO, fps_ratio_show, NULL);
+static DEVICE_ATTR(show_blank_event, S_IRWUGO, show_blank_event_show, NULL);
+#endif
+
+#ifdef CONFIG_LGE_INTERVAL_MONITOR
+static DEVICE_ATTR(fbcn_i, S_IRUGO | S_IWUSR, fbcn_i_show, fbcn_i_store);
+static DEVICE_ATTR(fbcn_en, S_IRUGO | S_IWUSR, fbcn_en_show, fbcn_en_store);
+static DEVICE_ATTR(fbcn_interval, S_IRUGO | S_IWUSR, fbcn_interval_show, NULL);
+#endif
+
+#ifdef CONFIG_TUNING_MIPI_CLOCK
+static ssize_t mtkfb_pllclk_show(struct device *dev,
+								 struct device_attribute *attr, char *buf)
+{
+  ssize_t r = 0;
+  struct LCM_PARAMS *lcm_param = primary_display_get_lcm_params();
+
+  if(lcm_param != NULL)
+    r = sprintf(buf, "pll_clk : %d MHz\n", lcm_param->dsi.PLL_CLOCK);
+
+  return r;
+}
+
+static ssize_t mtkfb_pllclk_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+  unsigned int new_clk;
+  struct LCM_PARAMS *lcm_param = primary_display_get_lcm_params();
+
+  if(lcm_param != NULL) {
+    sscanf(buf, "%u\n", &new_clk);
+    lcm_param->dsi.PLL_CLOCK = new_clk;
+    primary_display_set_lcm_params(lcm_param->dsi.PLL_CLOCK);
+
+    return count;
+  }
+
+  return 0;
+}
+
+static DEVICE_ATTR(pllclk, S_IRUSR | S_IWUSR, mtkfb_pllclk_show, mtkfb_pllclk_store);
+#endif
+
+#if defined(CONFIG_LGE_VSYNC_SKIP) || defined(CONFIG_LGE_INTERVAL_MONITOR) || defined(CONFIG_TUNING_MIPI_CLOCK)
+static struct attribute* mtkfb_attrs[] = {
+#ifdef CONFIG_LGE_VSYNC_SKIP
+  &dev_attr_vfps.attr,
+  &dev_attr_vfps_ratio.attr,
+  &dev_attr_vfps_fcnt.attr,
+  &dev_attr_show_blank_event.attr,
+#endif
+#ifdef CONFIG_LGE_INTERVAL_MONITOR
+  &dev_attr_fbcn_en.attr,
+  &dev_attr_fbcn_interval.attr,
+  &dev_attr_fbcn_i.attr,
+#endif
+#ifdef CONFIG_TUNING_MIPI_CLOCK
+  &dev_attr_pllclk.attr,
+#endif
+  NULL,
+};
+
+static struct attribute_group mtkfb_attr_group = {
+    .attrs = mtkfb_attrs,
+};
+#endif
+
 static int mtkfb_register_sysfs(struct mtkfb_device *fbdev)
 {
-	NOT_REFERENCED(fbdev);
+#if defined(CONFIG_LGE_VSYNC_SKIP) || defined(CONFIG_TUNING_MIPI_CLOCK)
+  int rc = 0;
+  struct device* dev = fbdev->fb_info->dev;
+
+  if(!dev)
+    return -EFAULT;
+
+  rc = sysfs_create_group(&dev->kobj, &mtkfb_attr_group);
+
+  if(rc)
+    pr_err("sysfs group create failed\n");
+#endif
+
+  NOT_REFERENCED(fbdev);
 
 	return 0;
 }
 
 static void mtkfb_unregister_sysfs(struct mtkfb_device *fbdev)
 {
-	NOT_REFERENCED(fbdev);
+#if defined(CONFIG_LGE_VSYNC_SKIP) || defined(CONFIG_TUNING_MIPI_CLOCK)
+  struct device* dev = fbdev->fb_info->dev;
+
+  if (dev)
+    sysfs_remove_group(&dev->kobj, &mtkfb_attr_group);
+#endif
+
+  NOT_REFERENCED(fbdev);
 }
 
 /*
@@ -2368,6 +2662,8 @@ static struct fb_info *allocate_fb_by_index(struct device *dev)
 }
 #endif
 
+atomic_t mtkfb_probe_kick = ATOMIC_INIT(0);
+
 static int mtkfb_probe(struct platform_device *pdev)
 {
 	struct mtkfb_device *fbdev = NULL;
@@ -2396,6 +2692,11 @@ static int mtkfb_probe(struct platform_device *pdev)
 		return -EPROBE_DEFER;
 	}
 #endif
+
+	if (atomic_read(&mtkfb_probe_kick)){
+	  DISPERR("already mtkfb_probe\n");
+	  return 0;
+	}
 	_parse_tag_videolfb();
 
 	init_state = 0;
@@ -2424,7 +2725,9 @@ static int mtkfb_probe(struct platform_device *pdev)
 	disp_hal_allocate_framebuffer(fb_base, (fb_base + vramsize - 1),
 		(unsigned long *)(&fbdev->fb_va_base), &fb_pa);
 	fbdev->fb_pa_base = fb_base;
-
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+	primary_display_gctxt_init();
+#endif
 	primary_display_set_frame_buffer_address(
 		(unsigned long)(fbdev->fb_va_base), fb_pa, fb_base);
 	primary_display_init(mtkfb_find_lcm_driver(), lcd_fps, is_lcm_inited);
@@ -2482,6 +2785,20 @@ static int mtkfb_probe(struct platform_device *pdev)
 		_mtkfb_internal_test((unsigned long)(fbdev->fb_va_base),
 			MTK_FB_XRES, MTK_FB_YRES);
 
+#if defined(CONFIG_LGE_VSYNC_SKIP) || defined(CONFIG_TUNING_MIPI_CLOCK)
+  r = register_framebuffer(fbi);
+  if (r != 0) {
+    DISPERR("register_framebuffer failed\n");
+    goto cleanup;
+  }
+
+  r = mtkfb_register_sysfs(fbdev);
+  if (r) {
+    DISPERR("mtkfb_register_sysfs fail, r = %d\n", r);
+    goto cleanup;
+  }
+  init_state++;		/* 5 */
+#else
 	r = mtkfb_register_sysfs(fbdev);
 	if (r) {
 		DISPERR("mtkfb_register_sysfs fail, r = %d\n", r);
@@ -2494,6 +2811,7 @@ static int mtkfb_probe(struct platform_device *pdev)
 		DISPERR("register_framebuffer failed\n");
 		goto cleanup;
 	}
+#endif
 	DISPMSG("register_framebuffer done\n");
 
 #if defined(CONFIG_MTK_DUAL_DISPLAY_SUPPORT) && \
@@ -2515,10 +2833,21 @@ static int mtkfb_probe(struct platform_device *pdev)
 		primary_display_diagnose();
 
 
+	/* this function will get fb_heap base address to ion
+	 * for management frame buffer
+	 */
+#ifdef MTK_FB_ION_SUPPORT
+	ion_drv_create_FB_heap(mtkfb_get_fb_base(), mtkfb_get_fb_size());
+#endif
 	fbdev->state = MTKFB_ACTIVE;
 
 	MSG_FUNC_LEAVE();
 	pr_info("disp driver(2) mtkfb_probe end\n");
+
+	if (!atomic_read(&mtkfb_probe_kick)){
+	  atomic_set(&mtkfb_probe_kick, 1);
+	}
+
 	return 0;
 
 cleanup:
@@ -2581,6 +2910,9 @@ static void mtkfb_shutdown(struct platform_device *pdev)
 		MTKFB_LOG("mtkfb has been power off\n");
 		return;
 	}
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	primary_set_shutdown_status(true);
+#endif
 	primary_display_set_power_mode(FB_SUSPEND);
 	primary_display_suspend();
 	MTKFB_LOG("[FB Driver] leave mtkfb_shutdown\n");
@@ -2631,6 +2963,11 @@ static void mtkfb_early_suspend(void)
 
 	if (disp_helper_get_stage() != DISP_HELPER_STAGE_NORMAL)
 		return;
+
+#ifdef CONFIG_LGE_LCD_OFF_DIMMING
+	fb_blank_called=true;
+	printk(" fb_balnk_called true\n");
+#endif
 
 	DISPMSG("[FB Driver] enter early_suspend\n");
 

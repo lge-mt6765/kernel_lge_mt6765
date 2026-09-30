@@ -645,9 +645,9 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 		fifo_off_spm = 50; /* 10 times*/
 		fifo_off_dvfs = 2;
 		if (is_wrot_sram)
-			fifo_off_ultra = 50;
+			fifo_off_ultra = 535; /* 10 times */
 		else if (is_rsz_sram)
-			fifo_off_ultra = 10;
+			fifo_off_ultra = 190; /* 10 times */
 		else
 			fifo_off_ultra = 0;
 		consume_rate = rdma_golden_setting->dst_width;
@@ -675,21 +675,31 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 	do_div(consume_rate_div_tmp, 100);
 	consume_rate_div = DIV_ROUND_UP((unsigned int)consume_rate_div_tmp, 10);
 
-	preultra_low = (preultra_low_us + fifo_off_ultra) * consume_rate_div;
+	preultra_low = (preultra_low_us * 10 + fifo_off_ultra) * consume_rate_div;
+	preultra_low = DIV_ROUND_UP(preultra_low, 10);
 
-	preultra_high = (preultra_high_us + fifo_off_ultra) * consume_rate_div;
+	preultra_high = (preultra_high_us * 10 + fifo_off_ultra) * consume_rate_div;
+	preultra_high = DIV_ROUND_UP(preultra_high, 10);
 
-	ultra_low = (ultra_low_us + fifo_off_ultra) * consume_rate_div;
+	ultra_low = (ultra_low_us * 10 + fifo_off_ultra) * consume_rate_div;
+	ultra_low = DIV_ROUND_UP(ultra_low, 10);
 
 	ultra_high = preultra_low;
 	if (idx == 0) {
 		/* only rdma0 can share sram */
-		if (is_wrot_sram)
+		if (is_wrot_sram) {
 			fifo_valid_size = 2048;
-		else if (is_rsz_sram)
+			preultra_low = preultra_low - (10 * consume_rate_div);
+			preultra_high = preultra_high - (10 * consume_rate_div);
+			ultra_low = ultra_low - (10 * consume_rate_div);
+		} else if (is_rsz_sram) {
 			fifo_valid_size = 736;
-		else
+			preultra_low = preultra_low - (10 * consume_rate_div);
+			preultra_high = preultra_high - (10 * consume_rate_div);
+			ultra_low = ultra_low - (10 * consume_rate_div);
+		} else {
 			fifo_valid_size = 384;
+		}
 	} else {
 		fifo_valid_size = 128;
 	}
@@ -808,14 +818,26 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 		REG_FLD_VAL(DRAM_CON_FLD_BANK_BOUNDARY_SEL, 1));
 
 	/*DISP_RDMA_DVFS_SETTING_PREULTRA*/
-	dvfs_preultra_low = (preultra_low_us + fifo_off_ultra + fifo_off_dvfs)
+	dvfs_preultra_low = (preultra_low_us * 10 + fifo_off_ultra + fifo_off_dvfs * 10)
 						* consume_rate_div;
+	dvfs_preultra_low = DIV_ROUND_UP(dvfs_preultra_low, 10);
 
-	dvfs_preultra_high = (preultra_high_us + fifo_off_ultra + fifo_off_dvfs)
+	dvfs_preultra_high = (preultra_high_us * 10 + fifo_off_ultra + fifo_off_dvfs * 10)
 						* consume_rate_div;
+	dvfs_preultra_high = DIV_ROUND_UP(dvfs_preultra_high, 10);
 
-	dvfs_ultra_low = (ultra_low_us + fifo_off_ultra + fifo_off_dvfs)
+	dvfs_ultra_low = (ultra_low_us * 10 + fifo_off_ultra + fifo_off_dvfs * 10)
 						* consume_rate_div;
+	dvfs_ultra_low = DIV_ROUND_UP(dvfs_ultra_low, 10);
+
+	if (idx == 0) {
+		/* only rdma0 can share sram */
+		if (is_wrot_sram || is_rsz_sram) {
+			dvfs_preultra_low = dvfs_preultra_low - (10 * consume_rate_div);
+			dvfs_preultra_high = dvfs_preultra_high - (10 * consume_rate_div);
+			dvfs_ultra_low = dvfs_ultra_low - (10 * consume_rate_div);
+		}
+	}
 
 	dvfs_ultra_high = dvfs_preultra_low;
 	DISP_REG_SET(handle, idx * DISP_RDMA_INDEX_OFFSET +
@@ -1022,7 +1044,6 @@ int rdma_clock_on(enum DISP_MODULE_ENUM module, void *handle)
 
 int rdma_clock_off(enum DISP_MODULE_ENUM module, void *handle)
 {
-	DISPCHECK("%s clock_off\n", ddp_get_module_name(module));
 	ddp_clk_disable_unprepare(ddp_get_module_clk_id(module));
 	return 0;
 }

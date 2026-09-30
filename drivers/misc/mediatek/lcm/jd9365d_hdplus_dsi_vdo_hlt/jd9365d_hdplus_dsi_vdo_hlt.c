@@ -40,7 +40,6 @@
 #elif defined(BUILD_UBOOT)
 #include <asm/arch/mt_gpio.h>
 #else
-#include "upmu_common.h"
 #include <linux/string.h>
 #endif
 
@@ -56,7 +55,6 @@
 #include <boot_mode.h>
 #else
 #include <linux/types.h>
-#include <upmu_hw.h>
 #endif
 
 #include "ddp_hal.h"

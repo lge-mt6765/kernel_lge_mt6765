@@ -36,4 +36,11 @@ int disp_bls_set_backlight(int level_1024);
 bool disp_pwm_is_osc(void);
 void disp_pwm_test(const char *cmd, char *debug_output);
 
+#if defined(CONFIG_LGE_LCM_BACKLIGHT_PWM)
+#if defined(CONFIG_LGE_BACKLIGHT_BRIGHTNESS_TUNING)
+void set_max_backlight_brightness(unsigned int brightness);
+unsigned int get_pwm_max_backlight_brightness(void);
+#endif
+#endif
+
 #endif

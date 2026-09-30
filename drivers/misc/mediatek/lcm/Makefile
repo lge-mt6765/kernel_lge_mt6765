@@ -32,7 +32,10 @@ else
     MTK_PLATFORM:= $(subst ",,$(CONFIG_MTK_PLATFORM))
 endif
 
-subdir-ccflags-$(CONFIG_MTK_LCM) += -I$(srctree)/drivers/misc/mediatek/lcm/inc
+subdir-ccflags-$(CONFIG_MTK_LCM) += -I$(srctree)/drivers/misc/mediatek/lcm/inc \
+                                    -I$(srctree)/drivers/misc/mediatek/cmdq/v3/ \
+                                    -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(MTK_PLATFORM)/ \
+                                    -I$(srctree)/drivers/misc/mediatek/lcd_bias/
 subdir-ccflags-$(CONFIG_MTK_FB) += -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/dispsys \
                                        -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/dispsys/mt6735 \
                                        -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/videox \

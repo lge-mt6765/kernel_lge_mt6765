@@ -415,4 +415,8 @@ extern char *saved_command_line;
 #endif
 #endif
 
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+void mtkfb_blank_esd_recovery(void);
+#endif
+
 #endif

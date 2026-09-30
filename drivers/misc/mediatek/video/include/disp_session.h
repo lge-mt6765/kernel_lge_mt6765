@@ -334,11 +334,18 @@ struct disp_frame_cfg_t {
 	int res_idx;
 	unsigned int hrt_weight;
 	unsigned int hrt_idx;
+#ifdef CONFIG_LGE_MTK_DISPLAY_BUG_FIX
+	/* ALPS04960042 */
+	bool is_camera;
+	bool is_incall;
+#endif
 
 	/* for panel HBM (High Backlight Mode) control */
 	bool hbm_en;
 	/*DynFPS*/
 	int active_config;
+
+	unsigned int bg_color;
 };
 
 struct disp_session_info {
